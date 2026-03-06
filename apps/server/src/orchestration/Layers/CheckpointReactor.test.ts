@@ -43,7 +43,7 @@ const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
   readonly eventId: EventId;
-  readonly provider: "codex";
+  readonly provider: "codex" | "claudeCode" | "cursor";
   readonly createdAt: string;
   readonly threadId: ThreadId;
   readonly turnId?: string | undefined;
@@ -91,6 +91,7 @@ function createProviderServiceHarness(
     listSessions,
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     rollbackConversation,
+    stopAll: () => Effect.void,
     streamEvents: Stream.fromPubSub(runtimeEventPubSub),
   };
 

@@ -1,13 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  getAppModelOptions,
-  getSlashModelOptions,
-  normalizeCustomModelSlugs,
-  resolveAppServiceTier,
-  shouldShowFastTierIcon,
-  resolveAppModelSelection,
-} from "./appSettings";
+import { getAppModelOptions, getSlashModelOptions, normalizeCustomModelSlugs } from "./appSettings";
 
 describe("normalizeCustomModelSlugs", () => {
   it("normalizes aliases, removes built-ins, and deduplicates values", () => {
@@ -21,6 +14,17 @@ describe("normalizeCustomModelSlugs", () => {
         null,
       ]),
     ).toEqual(["custom/internal-model"]);
+  });
+
+  it("normalizes provider-specific aliases for claude and cursor", () => {
+    expect(normalizeCustomModelSlugs(["sonnet"], "claudeCode")).toEqual([]);
+    expect(normalizeCustomModelSlugs(["claude/custom-sonnet"], "claudeCode")).toEqual([
+      "claude/custom-sonnet",
+    ]);
+    expect(normalizeCustomModelSlugs(["composer"], "cursor")).toEqual([]);
+    expect(normalizeCustomModelSlugs(["cursor/custom-model"], "cursor")).toEqual([
+      "cursor/custom-model",
+    ]);
   });
 });
 
@@ -47,17 +51,13 @@ describe("getAppModelOptions", () => {
       isCustom: true,
     });
   });
-});
 
-describe("resolveAppModelSelection", () => {
-  it("preserves saved custom model slugs instead of falling back to the default", () => {
-    expect(resolveAppModelSelection("codex", ["galapagos-alpha"], "galapagos-alpha")).toBe(
-      "galapagos-alpha",
+  it("keeps a saved custom provider model available as an exact slug option", () => {
+    const options = getAppModelOptions("claudeCode", ["claude/custom-opus"], "claude/custom-opus");
+
+    expect(options.some((option) => option.slug === "claude/custom-opus" && option.isCustom)).toBe(
+      true,
     );
-  });
-
-  it("falls back to the provider default when no model is selected", () => {
-    expect(resolveAppModelSelection("codex", [], "")).toBe("gpt-5.4");
   });
 });
 
@@ -83,23 +83,12 @@ describe("getSlashModelOptions", () => {
 
     expect(options.map((option) => option.slug)).toEqual(["openai/gpt-oss-120b"]);
   });
-});
 
-describe("resolveAppServiceTier", () => {
-  it("maps automatic to no override", () => {
-    expect(resolveAppServiceTier("auto")).toBeNull();
-  });
+  it("includes provider-specific custom slugs in non-codex model lists", () => {
+    const claudeOptions = getAppModelOptions("claudeCode", ["claude/custom-opus"]);
+    const cursorOptions = getAppModelOptions("cursor", ["cursor/custom-model"]);
 
-  it("preserves explicit service tier overrides", () => {
-    expect(resolveAppServiceTier("fast")).toBe("fast");
-    expect(resolveAppServiceTier("flex")).toBe("flex");
-  });
-});
-
-describe("shouldShowFastTierIcon", () => {
-  it("shows the fast-tier icon only for gpt-5.4 on fast tier", () => {
-    expect(shouldShowFastTierIcon("gpt-5.4", "fast")).toBe(true);
-    expect(shouldShowFastTierIcon("gpt-5.4", "auto")).toBe(false);
-    expect(shouldShowFastTierIcon("gpt-5.3-codex", "fast")).toBe(false);
+    expect(claudeOptions.some((option) => option.slug === "claude/custom-opus")).toBe(true);
+    expect(cursorOptions.some((option) => option.slug === "cursor/custom-model")).toBe(true);
   });
 });

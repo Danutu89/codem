@@ -1,6 +1,6 @@
 import { Fragment, type ReactNode, createElement, useEffect } from "react";
 import {
-  DEFAULT_MODEL_BY_PROVIDER,
+  DEFAULT_MODEL,
   type ProviderKind,
   ThreadId,
   type OrchestrationReadModel,
@@ -13,7 +13,11 @@ import {
   resolveModelSlugForProvider,
 } from "@t3tools/shared/model";
 import { create } from "zustand";
-import { type ChatMessage, type Project, type Thread } from "./types";
+import {
+  type ChatMessage,
+  type Project,
+  type Thread,
+} from "./types";
 
 // ── State ────────────────────────────────────────────────────────────
 
@@ -110,9 +114,7 @@ function mapProjectsFromReadModel(
       id: project.id,
       name: project.title,
       cwd: project.workspaceRoot,
-      model:
-        existing?.model ??
-        resolveModelSlug(project.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER.codex),
+      model: existing?.model ?? resolveModelSlug(project.defaultModel ?? DEFAULT_MODEL),
       expanded:
         existing?.expanded ??
         (persistedExpandedProjectCwds.size > 0
@@ -143,26 +145,54 @@ function toLegacySessionStatus(
 }
 
 function toLegacyProvider(providerName: string | null): ProviderKind {
-  if (providerName === "codex") {
+  if (providerName === "codex" || providerName === "claudeCode" || providerName === "cursor") {
     return providerName;
   }
   return "codex";
 }
 
 const CODEX_MODEL_SLUGS = new Set<string>(getModelOptions("codex").map((option) => option.slug));
+const CLAUDE_MODEL_SLUGS = new Set<string>(
+  getModelOptions("claudeCode").map((option) => option.slug),
+);
+const CURSOR_MODEL_SLUGS = new Set<string>(getModelOptions("cursor").map((option) => option.slug));
+const CURSOR_DISTINCT_MODEL_SLUGS = new Set(
+  [...CURSOR_MODEL_SLUGS].filter(
+    (slug) => !CODEX_MODEL_SLUGS.has(slug) && !CLAUDE_MODEL_SLUGS.has(slug),
+  ),
+);
 
 function inferProviderForThreadModel(input: {
   readonly model: string;
   readonly sessionProviderName: string | null;
 }): ProviderKind {
-  if (input.sessionProviderName === "codex") {
+  if (
+    input.sessionProviderName === "codex" ||
+    input.sessionProviderName === "claudeCode" ||
+    input.sessionProviderName === "cursor"
+  ) {
     return input.sessionProviderName;
+  }
+  const normalizedCursor = normalizeModelSlug(input.model, "cursor");
+  if (normalizedCursor && CURSOR_DISTINCT_MODEL_SLUGS.has(normalizedCursor)) {
+    return "cursor";
+  }
+  const normalizedClaude = normalizeModelSlug(input.model, "claudeCode");
+  if (normalizedClaude && CLAUDE_MODEL_SLUGS.has(normalizedClaude)) {
+    return "claudeCode";
   }
   const normalizedCodex = normalizeModelSlug(input.model, "codex");
   if (normalizedCodex && CODEX_MODEL_SLUGS.has(normalizedCodex)) {
     return "codex";
   }
-  return "codex";
+  if (
+    input.model.trim().startsWith("composer-") ||
+    input.model.trim().startsWith("gemini-") ||
+    input.model.trim().endsWith("-thinking")
+  ) {
+    return "cursor";
+  }
+  return input.model.trim().startsWith("claude-") ? "claudeCode" : "codex";
 }
 
 function resolveWsHttpOrigin(): string {
@@ -179,7 +209,11 @@ function resolveWsHttpOrigin(): string {
   try {
     const wsUrl = new URL(wsCandidate);
     const protocol =
-      wsUrl.protocol === "wss:" ? "https:" : wsUrl.protocol === "ws:" ? "http:" : wsUrl.protocol;
+      wsUrl.protocol === "wss:"
+        ? "https:"
+        : wsUrl.protocol === "ws:"
+          ? "http:"
+          : wsUrl.protocol;
     return `${protocol}//${wsUrl.host}`;
   } catch {
     return window.location.origin;
@@ -199,12 +233,17 @@ function attachmentPreviewRoutePath(attachmentId: string): string {
 
 // ── Pure state transition functions ────────────────────────────────────
 
-export function syncServerReadModel(state: AppState, readModel: OrchestrationReadModel): AppState {
+export function syncServerReadModel(
+  state: AppState,
+  readModel: OrchestrationReadModel,
+): AppState {
   const projects = mapProjectsFromReadModel(
     readModel.projects.filter((project) => project.deletedAt === null),
     state.projects,
   );
-  const existingThreadById = new Map(state.threads.map((thread) => [thread.id, thread] as const));
+  const existingThreadById = new Map(
+    state.threads.map((thread) => [thread.id, thread] as const),
+  );
   const threads = readModel.threads
     .filter((thread) => thread.deletedAt === null)
     .map((thread) => {
@@ -323,7 +362,9 @@ export function markThreadUnread(state: AppState, threadId: ThreadId): AppState 
 export function toggleProject(state: AppState, projectId: Project["id"]): AppState {
   return {
     ...state,
-    projects: state.projects.map((p) => (p.id === projectId ? { ...p, expanded: !p.expanded } : p)),
+    projects: state.projects.map((p) =>
+      p.id === projectId ? { ...p, expanded: !p.expanded } : p,
+    ),
   };
 }
 
@@ -377,19 +418,27 @@ interface AppStore extends AppState {
   toggleProject: (projectId: Project["id"]) => void;
   setProjectExpanded: (projectId: Project["id"], expanded: boolean) => void;
   setError: (threadId: ThreadId, error: string | null) => void;
-  setThreadBranch: (threadId: ThreadId, branch: string | null, worktreePath: string | null) => void;
+  setThreadBranch: (
+    threadId: ThreadId,
+    branch: string | null,
+    worktreePath: string | null,
+  ) => void;
 }
 
 export const useStore = create<AppStore>((set) => ({
   ...readPersistedState(),
-  syncServerReadModel: (readModel) => set((state) => syncServerReadModel(state, readModel)),
+  syncServerReadModel: (readModel) =>
+    set((state) => syncServerReadModel(state, readModel)),
   markThreadVisited: (threadId, visitedAt) =>
     set((state) => markThreadVisited(state, threadId, visitedAt)),
-  markThreadUnread: (threadId) => set((state) => markThreadUnread(state, threadId)),
-  toggleProject: (projectId) => set((state) => toggleProject(state, projectId)),
+  markThreadUnread: (threadId) =>
+    set((state) => markThreadUnread(state, threadId)),
+  toggleProject: (projectId) =>
+    set((state) => toggleProject(state, projectId)),
   setProjectExpanded: (projectId, expanded) =>
     set((state) => setProjectExpanded(state, projectId, expanded)),
-  setError: (threadId, error) => set((state) => setError(state, threadId, error)),
+  setError: (threadId, error) =>
+    set((state) => setError(state, threadId, error)),
   setThreadBranch: (threadId, branch, worktreePath) =>
     set((state) => setThreadBranch(state, threadId, branch, worktreePath)),
 }));
