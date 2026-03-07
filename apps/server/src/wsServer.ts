@@ -59,6 +59,7 @@ import { clamp } from "effect/Number";
 import { Open, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
+import { ActiveTextGenProvider } from "./git/Services/ActiveTextGenProvider.ts";
 import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
 import {
   ATTACHMENTS_ROUTE_PREFIX,
@@ -217,6 +218,7 @@ export type ServerRuntimeServices =
   | ServerCoreRuntimeServices
   | GitManager
   | GitCore
+  | ActiveTextGenProvider
   | TerminalManager
   | Keybindings
   | Open
@@ -258,6 +260,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const keybindingsManager = yield* Keybindings;
   const providerHealth = yield* ProviderHealth;
   const git = yield* GitCore;
+  const activeTextGenProvider = yield* ActiveTextGenProvider;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
@@ -737,6 +740,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case ORCHESTRATION_WS_METHODS.dispatchCommand: {
         const { command } = request.body;
         const normalizedCommand = yield* normalizeDispatchCommand({ command });
+        // Keep the text-generation provider in sync with the orchestration provider.
+        if (
+          normalizedCommand.type === "thread.turn.start" &&
+          normalizedCommand.provider !== undefined
+        ) {
+          yield* activeTextGenProvider.set(normalizedCommand.provider);
+        }
         return yield* orchestrationEngine.dispatch(normalizedCommand);
       }
 

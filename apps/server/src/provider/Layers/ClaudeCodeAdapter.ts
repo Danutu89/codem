@@ -120,6 +120,7 @@ interface ClaudeSessionContext {
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
   permissionMode: PermissionMode | undefined;
+  activePermissionMode: PermissionMode | undefined;
   turnState: ClaudeTurnState | undefined;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
@@ -1679,6 +1680,16 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
                 } satisfies PermissionResult;
               }
 
+              // In plan mode, only allow ExitPlanMode (which goes through approval)
+              // and deny all other tools so Claude cannot edit/execute while planning.
+              if (context.activePermissionMode === "plan" && toolName !== "ExitPlanMode") {
+                return {
+                  behavior: "deny",
+                  message:
+                    "You are in plan mode. You must not execute tools. Create a plan and use ExitPlanMode to propose it.",
+                } satisfies PermissionResult;
+              }
+
               const runtimeMode = input.runtimeMode ?? "full-access";
               // ExitPlanMode must go through the approval flow even in full-access
               // so the user can review and approve/deny the plan.
@@ -1891,6 +1902,7 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
           turns: [],
           inFlightTools,
           permissionMode,
+          activePermissionMode: permissionMode,
           turnState: undefined,
           lastAssistantUuid: resumeState?.resumeSessionAt,
           lastThreadStartedId: undefined,
@@ -1982,6 +1994,7 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
             try: () => context.query.setPermissionMode(desiredPermissionMode),
             catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
           });
+          context.activePermissionMode = desiredPermissionMode;
         }
 
         const turnId = TurnId.makeUnsafe(yield* Random.nextUUIDv4);
