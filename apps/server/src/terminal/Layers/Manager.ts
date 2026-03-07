@@ -92,11 +92,16 @@ function uniqueShellCandidates(candidates: Array<ShellCandidate | null>): ShellC
   return ordered;
 }
 
-function resolveShellCandidates(shellResolver: () => string): ShellCandidate[] {
+function resolveShellCandidates(
+  shellResolver: () => string,
+  userShellOverride?: string,
+): ShellCandidate[] {
+  const userOverride = shellCandidateFromCommand(normalizeShellCommand(userShellOverride));
   const requested = shellCandidateFromCommand(normalizeShellCommand(shellResolver()));
 
   if (process.platform === "win32") {
     return uniqueShellCandidates([
+      userOverride,
       requested,
       shellCandidateFromCommand(process.env.ComSpec ?? null),
       shellCandidateFromCommand("powershell.exe"),
@@ -105,6 +110,7 @@ function resolveShellCandidates(shellResolver: () => string): ShellCandidate[] {
   }
 
   return uniqueShellCandidates([
+    userOverride,
     requested,
     shellCandidateFromCommand(normalizeShellCommand(process.env.SHELL)),
     shellCandidateFromCommand("/bin/zsh"),
@@ -589,7 +595,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     let ptyProcess: PtyProcess | null = null;
     let startedShell: string | null = null;
     try {
-      const shellCandidates = resolveShellCandidates(this.shellResolver);
+      const shellCandidates = resolveShellCandidates(this.shellResolver, input.shell);
       const terminalEnv = createTerminalSpawnEnv(process.env, session.runtimeEnv);
       let lastSpawnError: unknown = null;
 

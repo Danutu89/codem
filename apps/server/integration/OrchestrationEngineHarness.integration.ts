@@ -59,6 +59,7 @@ import {
   type TestProviderAdapterHarness,
 } from "./TestProviderAdapter.integration.ts";
 import { ServerConfig } from "../src/config.ts";
+import { AnalyticsService } from "../src/telemetry/Services/AnalyticsService.ts";
 
 function runGit(cwd: string, args: ReadonlyArray<string>) {
   return execFileSync("git", args, {
@@ -280,6 +281,7 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(gitCoreLayer),
       Layer.provideMerge(textGenerationLayer),
+      Layer.provideMerge(providerSessionDirectoryLayer),
     );
     const checkpointReactorLayer = CheckpointReactorLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),
@@ -293,6 +295,7 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provide(persistenceLayer),
       Layer.provideMerge(ServerConfig.layerTest(workspaceDir, stateDir)),
       Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(AnalyticsService.layerTest),
     );
 
     const runtime = ManagedRuntime.make(layer);

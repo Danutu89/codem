@@ -6,6 +6,7 @@ import {
   type NativeApi,
   ServerConfigUpdatedPayload,
   TerminalEvent,
+  BrowserTestProgress,
   WS_CHANNELS,
   WS_METHODS,
   WsWelcomePayload,
@@ -198,6 +199,15 @@ export function createWsNativeApi(): NativeApi {
       onDomainEvent: (callback) =>
         transport.subscribe(ORCHESTRATION_WS_CHANNELS.domainEvent, (data) => {
           const payload = decodeAndWarnOnFailure(OrchestrationEvent, data);
+          if (payload) callback(payload);
+        }),
+    },
+    browserTest: {
+      run: (input) => transport.request(WS_METHODS.browserTestRun, input, { timeoutMs: 10 * 60_000 }),
+      stop: () => transport.request(WS_METHODS.browserTestStop),
+      onProgress: (callback) =>
+        transport.subscribe(WS_CHANNELS.browserTestProgress, (data) => {
+          const payload = decodeAndWarnOnFailure(BrowserTestProgress, data);
           if (payload) callback(payload);
         }),
     },

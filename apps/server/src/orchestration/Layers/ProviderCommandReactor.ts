@@ -18,6 +18,7 @@ import { GitCore } from "../../git/Services/GitCore.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProviderCommandReactor,
@@ -128,6 +129,7 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
+  const providerSessionDirectory = yield* ProviderSessionDirectory;
   const git = yield* GitCore;
   const textGeneration = yield* TextGeneration;
   const handledTurnStartKeys = yield* Cache.make<string, true>({
@@ -275,14 +277,38 @@ const make = Effect.gen(function* () {
       const shouldRestartForModelChange =
         modelChanged && sessionModelSwitch === "restart-session";
 
-      if (!runtimeModeChanged && !providerChanged && !shouldRestartForModelChange) {
+      // If the orchestration read model still shows a running session but no
+      // live provider session exists (e.g. after app restart), fall through to
+      // start a fresh provider session instead of returning the stale id.
+      if (!activeSession) {
+        yield* Effect.logInfo(
+          "provider command reactor detected stale session after restart; starting fresh",
+          {
+            threadId,
+            existingSessionThreadId,
+            currentProvider,
+          },
+        );
+      } else if (!runtimeModeChanged && !providerChanged && !shouldRestartForModelChange) {
         return existingSessionThreadId;
       }
+
+      // When resuming after an app restart the in-memory session is gone, so
+      // `activeSession?.resumeCursor` would be undefined.  Read the persisted
+      // resume cursor from the session directory so the provider adapter can
+      // rejoin the existing Claude conversation instead of starting fresh.
+      const persistedBinding = yield* providerSessionDirectory.getBinding(threadId).pipe(
+        Effect.orElseSucceed(() => Option.none()),
+      );
+      const persistedResumeCursor = Option.match(persistedBinding, {
+        onNone: () => undefined,
+        onSome: (binding) => binding.resumeCursor ?? undefined,
+      });
 
       const resumeCursor =
         providerChanged || shouldRestartForModelChange
           ? undefined
-          : (activeSession?.resumeCursor ?? undefined);
+          : (activeSession?.resumeCursor ?? persistedResumeCursor);
       yield* Effect.logInfo("provider command reactor restarting provider session", {
         threadId,
         existingSessionThreadId,

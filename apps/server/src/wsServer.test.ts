@@ -1169,6 +1169,7 @@ describe("WebSocket Server", () => {
       respondToRequest: () => unsupported(),
       respondToUserInput: () => unsupported(),
       stopSession: () => unsupported(),
+      stopAll: () => Effect.void,
       listSessions: () => Effect.succeed([]),
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
       rollbackConversation: () => unsupported(),

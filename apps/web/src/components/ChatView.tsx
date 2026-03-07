@@ -125,6 +125,7 @@ import {
   resolveShortcutCommand,
   shortcutLabelForCommand,
 } from "../keybindings";
+import BrowserTestPanel from "./BrowserTestPanel";
 import ChatMarkdown from "./ChatMarkdown";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
@@ -202,7 +203,7 @@ import { Toggle } from "./ui/toggle";
 import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
-import { getAppModelOptions, useAppSettings } from "../appSettings";
+import { getAppModelOptions, getAppSettingsSnapshot, useAppSettings } from "../appSettings";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
@@ -1489,6 +1490,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         worktreePath: options?.worktreePath ?? activeThread.worktreePath ?? null,
         ...(options?.env ? { extraEnv: options.env } : {}),
       });
+      const shellOverride = getAppSettingsSnapshot().defaultShell || undefined;
       const openTerminalInput: Parameters<typeof api.terminal.open>[0] = shouldCreateNewTerminal
         ? {
             threadId: activeThreadId,
@@ -1497,12 +1499,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
             env: runtimeEnv,
             cols: SCRIPT_TERMINAL_COLS,
             rows: SCRIPT_TERMINAL_ROWS,
+            ...(shellOverride ? { shell: shellOverride } : {}),
           }
         : {
             threadId: activeThreadId,
             terminalId: targetTerminalId,
             cwd: targetCwd,
             env: runtimeEnv,
+            ...(shellOverride ? { shell: shellOverride } : {}),
           };
 
       try {
@@ -3512,6 +3516,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           markdownCwd={gitCwd ?? undefined}
           resolvedTheme={resolvedTheme}
           workspaceRoot={activeProject?.cwd ?? undefined}
+          projectId={activeProject?.id ?? undefined}
         />
       </div>
 
@@ -4800,6 +4805,7 @@ interface MessagesTimelineProps {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   workspaceRoot: string | undefined;
+  projectId: string | undefined;
 }
 
 type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
@@ -4854,6 +4860,7 @@ const MessagesTimeline = memo(function MessagesTimeline({
   markdownCwd,
   resolvedTheme,
   workspaceRoot,
+  projectId,
 }: MessagesTimelineProps) {
   const timelineRootRef = useRef<HTMLDivElement | null>(null);
   const [timelineWidthPx, setTimelineWidthPx] = useState<number | null>(null);
@@ -5047,6 +5054,20 @@ const MessagesTimeline = memo(function MessagesTimeline({
     }));
   }, []);
 
+  const findPrecedingUserText = (row: TimelineRow): string | undefined => {
+    const rowIndex = rows.indexOf(row);
+    if (rowIndex < 0) return undefined;
+    for (let i = rowIndex - 1; i >= 0; i--) {
+      const prev = rows[i];
+      if (prev && prev.kind === "message" && prev.message.role === "user" && prev.message.text) {
+        return prev.message.text;
+      }
+      // Stop searching past a previous assistant message
+      if (prev && prev.kind === "message" && prev.message.role === "assistant") break;
+    }
+    return undefined;
+  };
+
   const renderRowContent = (row: TimelineRow) => (
     <div
       className="pb-4"
@@ -5220,13 +5241,16 @@ const MessagesTimeline = memo(function MessagesTimeline({
           return (
             <>
               {row.showCompletionDivider && (
-                <div className="my-3 flex items-center gap-3">
-                  <span className="h-px flex-1 bg-border" />
-                  <span className="rounded-full border border-border bg-background px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
-                    {completionSummary ? `Response • ${completionSummary}` : "Response"}
-                  </span>
-                  <span className="h-px flex-1 bg-border" />
-                </div>
+                <>
+                  <div className="my-3 flex items-center gap-3">
+                    <span className="h-px flex-1 bg-border" />
+                    <span className="rounded-full border border-border bg-background px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
+                      {completionSummary ? `Response • ${completionSummary}` : "Response"}
+                    </span>
+                    <span className="h-px flex-1 bg-border" />
+                  </div>
+                  <BrowserTestPanel projectId={projectId} agentSummary={messageText} userPrompt={findPrecedingUserText(row)} />
+                </>
               )}
               <div className="min-w-0 px-1 py-0.5">
                 <ChatMarkdown
@@ -5384,7 +5408,7 @@ function isAvailableProviderOption(
   label: string;
   available: true;
 } {
-  return option.available && option.value !== "claudeCode";
+  return option.available;
 }
 
 const AVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter(isAvailableProviderOption);

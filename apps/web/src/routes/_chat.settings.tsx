@@ -257,6 +257,80 @@ function SettingsRouteView() {
 
             <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">Terminal</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Configure the default terminal application and shell used for integrated terminal
+                  sessions.
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <label htmlFor="default-terminal" className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">
+                    Default terminal application
+                  </span>
+                  <Input
+                    id="default-terminal"
+                    value={settings.defaultTerminal}
+                    onChange={(event) => updateSettings({ defaultTerminal: event.target.value })}
+                    placeholder={
+                      typeof navigator !== "undefined" && navigator.platform?.startsWith("Win")
+                        ? "Windows Terminal"
+                        : typeof navigator !== "undefined" && navigator.platform?.startsWith("Mac")
+                          ? "Terminal.app"
+                          : "xterm"
+                    }
+                    spellCheck={false}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    The external terminal application to use. Leave blank for the system default.
+                  </span>
+                </label>
+
+                <label htmlFor="default-shell" className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">Default shell</span>
+                  <Input
+                    id="default-shell"
+                    value={settings.defaultShell}
+                    onChange={(event) => updateSettings({ defaultShell: event.target.value })}
+                    placeholder={
+                      typeof navigator !== "undefined" && navigator.platform?.startsWith("Win")
+                        ? "powershell.exe"
+                        : "/bin/zsh"
+                    }
+                    spellCheck={false}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    The shell program used for integrated terminal sessions. Leave blank to use your
+                    system default (<code>$SHELL</code>).
+                  </span>
+                </label>
+
+                <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <p>
+                    Shell:{" "}
+                    <span className="font-medium text-foreground">
+                      {settings.defaultShell || "System default"}
+                    </span>
+                  </p>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() =>
+                      updateSettings({
+                        defaultTerminal: defaults.defaultTerminal,
+                        defaultShell: defaults.defaultShell,
+                      })
+                    }
+                  >
+                    Reset terminal settings
+                  </Button>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Codex App Server</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
                   These overrides apply to new sessions and let you use a non-default Codex install.
@@ -523,6 +597,77 @@ function SettingsRouteView() {
                 {openKeybindingsError ? (
                   <p className="text-xs text-destructive">{openKeybindingsError}</p>
                 ) : null}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">Browser Testing</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Configure AI-powered browser testing using a local LM Studio instance. After a
+                  coding turn completes, use the &ldquo;Test&rdquo; button to automatically verify
+                  your app in a browser.
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <label htmlFor="lm-studio-endpoint" className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">LM Studio endpoint</span>
+                  <Input
+                    id="lm-studio-endpoint"
+                    value={settings.lmStudioEndpoint}
+                    onChange={(event) =>
+                      updateSettings({ lmStudioEndpoint: event.target.value })
+                    }
+                    placeholder="http://localhost:1234/v1"
+                    spellCheck={false}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    OpenAI-compatible API endpoint for your local LM Studio server.
+                  </span>
+                </label>
+
+                <label htmlFor="lm-studio-model" className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">LM Studio model ID</span>
+                  <Input
+                    id="lm-studio-model"
+                    value={settings.lmStudioModelId}
+                    onChange={(event) =>
+                      updateSettings({ lmStudioModelId: event.target.value })
+                    }
+                    placeholder="qwen2.5-7b-instruct"
+                    spellCheck={false}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    The model name loaded in LM Studio. Leave blank to use the default loaded model.
+                  </span>
+                </label>
+
+                <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <p>
+                    Endpoint:{" "}
+                    <span className="font-medium text-foreground">
+                      {settings.lmStudioEndpoint || "http://localhost:1234/v1"}
+                    </span>
+                  </p>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() =>
+                      updateSettings({
+                        lmStudioEndpoint: defaults.lmStudioEndpoint,
+                        lmStudioModelId: defaults.lmStudioModelId,
+                      })
+                    }
+                  >
+                    Reset browser test settings
+                  </Button>
+                </div>
+
+                <p className="text-xs text-muted-foreground">
+                  The app URL to test is configured per-project in the chat view when you click
+                  &ldquo;Test in Browser&rdquo;.
+                </p>
               </div>
             </section>
 

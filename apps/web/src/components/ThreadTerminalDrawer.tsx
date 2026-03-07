@@ -26,6 +26,7 @@ import {
   type ThreadTerminalGroup,
 } from "../types";
 import { readNativeApi } from "~/nativeApi";
+import { getAppSettingsSnapshot } from "../appSettings";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
@@ -276,6 +277,7 @@ function TerminalViewport({
         const activeFitAddon = fitAddonRef.current;
         if (!activeTerminal || !activeFitAddon) return;
         activeFitAddon.fit();
+        const appSettings = getAppSettingsSnapshot();
         const snapshot = await api.terminal.open({
           threadId,
           terminalId,
@@ -283,6 +285,7 @@ function TerminalViewport({
           cols: activeTerminal.cols,
           rows: activeTerminal.rows,
           ...(runtimeEnv ? { env: runtimeEnv } : {}),
+          ...(appSettings.defaultShell ? { shell: appSettings.defaultShell } : {}),
         });
         if (disposed) return;
         activeTerminal.write("\u001bc");

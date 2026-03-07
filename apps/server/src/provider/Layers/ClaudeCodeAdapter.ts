@@ -34,6 +34,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import { execFileSync } from "node:child_process";
 import { Cause, DateTime, Deferred, Effect, Layer, Queue, Random, Ref, Stream } from "effect";
 
 import {
@@ -48,6 +49,15 @@ import { ClaudeCodeAdapter, type ClaudeCodeAdapterShape } from "../Services/Clau
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = "claudeCode" as const;
+
+function resolveSystemClaudePath(): string | undefined {
+  try {
+    const cmd = process.platform === "win32" ? "where" : "which";
+    return execFileSync(cmd, ["claude"], { encoding: "utf8" }).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 type PromptQueueItem =
   | {
@@ -93,7 +103,7 @@ interface ToolInFlight {
 interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
-  readonly query: ClaudeQueryRuntime;
+  query: ClaudeQueryRuntime;
   readonly startedAt: string;
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
@@ -106,6 +116,8 @@ interface ClaudeSessionContext {
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
   stopped: boolean;
+  resumeRetried: boolean;
+  readonly rebuildQueryWithoutResume: (() => ClaudeQueryRuntime) | undefined;
 }
 
 interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
@@ -1280,6 +1292,35 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
               return;
             }
             const message = toMessage(Cause.squash(cause), "Claude runtime stream failed.");
+
+            // If the stream failed before any SDK message was received and we
+            // were attempting a session resume, the persisted resume cursor is
+            // likely stale (e.g. app restart while Claude daemon recycled).
+            // Automatically retry with a fresh session so the user doesn't have
+            // to manually recover.
+            if (
+              !context.resumeRetried &&
+              context.resumeSessionId &&
+              !context.lastThreadStartedId &&
+              context.rebuildQueryWithoutResume
+            ) {
+              context.resumeRetried = true;
+              yield* emitRuntimeWarning(
+                context,
+                `Claude session resume failed: ${message}. Retrying with a fresh session.`,
+              );
+
+              context.query.close();
+              context.resumeSessionId = undefined;
+              context.session = {
+                ...context.session,
+                resumeCursor: undefined,
+              };
+              context.query = context.rebuildQueryWithoutResume();
+              yield* runSdkStream(context);
+              return;
+            }
+
             yield* emitRuntimeError(context, message, cause);
             yield* completeTurn(context, "failed", message);
           }),
@@ -1544,9 +1585,10 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
         const queryOptions: ClaudeQueryOptions = {
           ...(input.cwd ? { cwd: input.cwd } : {}),
           ...(input.model ? { model: input.model } : {}),
-          ...(providerOptions?.binaryPath
-            ? { pathToClaudeCodeExecutable: providerOptions.binaryPath }
-            : {}),
+          ...((() => {
+            const execPath = providerOptions?.binaryPath ?? resolveSystemClaudePath();
+            return execPath ? { pathToClaudeCodeExecutable: execPath } : {};
+          })()),
           ...(permissionMode ? { permissionMode } : {}),
           ...(permissionMode === "bypassPermissions"
             ? { allowDangerouslySkipPermissions: true }
@@ -1597,6 +1639,19 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
           updatedAt: startedAt,
         };
 
+        // Build a callback that can recreate the query without resume options.
+        // Used by runSdkStream to retry when a stale resume cursor causes the
+        // Claude process to exit immediately.
+        // Build a callback that can recreate the query without resume options.
+        // Used by runSdkStream to retry when a stale resume cursor causes the
+        // Claude process to exit immediately.
+        const rebuildQueryWithoutResume = resumeState?.resume
+          ? () => {
+              const { resume: _r, resumeSessionAt: _s, ...freshOptions } = queryOptions;
+              return createQuery({ prompt, options: freshOptions });
+            }
+          : undefined;
+
         const context: ClaudeSessionContext = {
           session,
           promptQueue,
@@ -1610,6 +1665,8 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
           lastAssistantUuid: resumeState?.resumeSessionAt,
           lastThreadStartedId: undefined,
           stopped: false,
+          resumeRetried: false,
+          rebuildQueryWithoutResume,
         };
         yield* Ref.set(contextRef, context);
         sessions.set(threadId, context);

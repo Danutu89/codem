@@ -72,7 +72,10 @@ import {
 } from "./attachmentStore.ts";
 import { parseBase64DataUrl } from "./imageMime.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
-import { expandHomePath } from "./os-jank.ts";
+import {
+  runBrowserTest,
+  stopBrowserTest,
+} from "./browserTest/browserTestRunner";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -891,6 +894,87 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const body = stripRequestTag(request.body);
         const keybindingsConfig = yield* keybindingsManager.upsertKeybindingRule(body);
         return { keybindings: keybindingsConfig, issues: [] };
+      }
+
+      case WS_METHODS.browserTestRun: {
+        const body = stripRequestTag(request.body);
+        const result = yield* Effect.tryPromise({
+          try: () =>
+            runBrowserTest({
+              appUrl: body.appUrl,
+              lmStudioEndpoint: body.lmStudioEndpoint,
+              lmStudioModelId: body.lmStudioModelId,
+              instructions: body.instructions,
+              userPrompt: body.userPrompt,
+              callbacks: {
+                onRunning: (message) => {
+                  Effect.runFork(
+                    broadcastPush({
+                      type: "push",
+                      channel: WS_CHANNELS.browserTestProgress,
+                      data: { status: "running", message },
+                    }),
+                  );
+                },
+                onStep: (step) => {
+                  Effect.runFork(
+                    broadcastPush({
+                      type: "push",
+                      channel: WS_CHANNELS.browserTestProgress,
+                      data: {
+                        status: "step",
+                        message: `Step ${step.stepNumber}: ${step.action}`,
+                        step,
+                      },
+                    }),
+                  );
+                },
+                onCompleted: (testResult) => {
+                  Effect.runFork(
+                    broadcastPush({
+                      type: "push",
+                      channel: WS_CHANNELS.browserTestProgress,
+                      data: {
+                        status: "completed",
+                        message: testResult.passed ? "Tests passed" : "Tests failed",
+                        summary: {
+                          passed: testResult.passed,
+                          totalSteps: testResult.totalSteps,
+                          durationMs: testResult.durationMs,
+                          aiSummary: testResult.aiSummary,
+                        },
+                      },
+                    }),
+                  );
+                },
+                onError: (error) => {
+                  Effect.runFork(
+                    broadcastPush({
+                      type: "push",
+                      channel: WS_CHANNELS.browserTestProgress,
+                      data: { status: "error", message: error, error },
+                    }),
+                  );
+                },
+              },
+            }),
+          catch: (cause) =>
+            new RouteRequestError({
+              message: `Browser test failed: ${String(cause)}`,
+            }),
+        });
+        return result;
+      }
+
+      case WS_METHODS.browserTestStop: {
+        yield* Effect.tryPromise({
+          try: () => stopBrowserTest(),
+          catch: (cause) =>
+            new RouteRequestError({
+              message: `Failed to stop browser test: ${String(cause)}`,
+            }),
+        });
+        return {};
       }
 
       default: {

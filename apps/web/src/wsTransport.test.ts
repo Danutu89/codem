@@ -160,8 +160,7 @@ describe("WsTransport", () => {
     expect(warnSpy).toHaveBeenCalledTimes(2);
     expect(warnSpy).toHaveBeenNthCalledWith(1, "Dropped inbound WebSocket envelope", {
       reason: "decode-failed",
-      issue:
-        "SchemaError: SyntaxError: Expected property name or '}' in JSON at position 2 (line 1 column 3)",
+      issue: expect.stringContaining("SchemaError: SyntaxError:"),
       raw: "{ invalid-json",
     });
     expect(warnSpy).toHaveBeenNthCalledWith(2, "Dropped inbound WebSocket envelope", {

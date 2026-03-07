@@ -41,6 +41,11 @@ import type {
   OrchestrationReadModel,
 } from "./orchestration";
 import { EditorId } from "./editor";
+import type {
+  BrowserTestRunInput,
+  BrowserTestResult,
+  BrowserTestProgress,
+} from "./browserTest";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -147,5 +152,10 @@ export interface NativeApi {
     ) => Promise<OrchestrationGetFullThreadDiffResult>;
     replayEvents: (fromSequenceExclusive: number) => Promise<OrchestrationEvent[]>;
     onDomainEvent: (callback: (event: OrchestrationEvent) => void) => () => void;
+  };
+  browserTest: {
+    run: (input: BrowserTestRunInput) => Promise<BrowserTestResult>;
+    stop: () => Promise<void>;
+    onProgress: (callback: (progress: BrowserTestProgress) => void) => () => void;
   };
 }

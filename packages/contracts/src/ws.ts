@@ -31,6 +31,7 @@ import {
 import { KeybindingRule } from "./keybindings";
 import { ProjectSearchEntriesInput, ProjectWriteFileInput } from "./project";
 import { OpenInEditorInput } from "./editor";
+import { BrowserTestRunInput } from "./browserTest";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
@@ -67,6 +68,10 @@ export const WS_METHODS = {
   // Server meta
   serverGetConfig: "server.getConfig",
   serverUpsertKeybinding: "server.upsertKeybinding",
+
+  // Browser test
+  browserTestRun: "browserTest.run",
+  browserTestStop: "browserTest.stop",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
@@ -75,6 +80,7 @@ export const WS_CHANNELS = {
   terminalEvent: "terminal.event",
   serverWelcome: "server.welcome",
   serverConfigUpdated: "server.configUpdated",
+  browserTestProgress: "browserTest.progress",
 } as const;
 
 // -- Tagged Union of all request body schemas ─────────────────────────
@@ -129,6 +135,10 @@ const WebSocketRequestBody = Schema.Union([
   // Server meta
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
+
+  // Browser test
+  tagRequestBody(WS_METHODS.browserTestRun, BrowserTestRunInput),
+  tagRequestBody(WS_METHODS.browserTestStop, Schema.Struct({})),
 ]);
 
 export const WebSocketRequest = Schema.Struct({

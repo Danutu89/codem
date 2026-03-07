@@ -24,6 +24,7 @@ import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRe
 import { makeProviderServiceLive } from "./provider/Layers/ProviderService";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory";
 import { ProviderService } from "./provider/Services/ProviderService";
+import { ProviderSessionDirectory } from "./provider/Services/ProviderSessionDirectory";
 import { makeEventNdjsonLogger } from "./provider/Layers/EventNdjsonLogger";
 
 import { TerminalManagerLive } from "./terminal/Layers/Manager";
@@ -36,6 +37,16 @@ import { GitServiceLive } from "./git/Layers/GitService";
 import { BunPtyAdapterLive } from "./terminal/Layers/BunPTY";
 import { NodePtyAdapterLive } from "./terminal/Layers/NodePTY";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
+
+export function makeProviderSessionDirectoryLayer(): Layer.Layer<
+  ProviderSessionDirectory,
+  never,
+  SqlClient.SqlClient
+> {
+  return ProviderSessionDirectoryLive.pipe(
+    Layer.provide(ProviderSessionRuntimeRepositoryLive),
+  );
+}
 
 export function makeServerProviderLayer(): Layer.Layer<
   ProviderService,
@@ -52,9 +63,7 @@ export function makeServerProviderLayer(): Layer.Layer<
     const canonicalEventLogger = yield* makeEventNdjsonLogger(providerEventLogPath, {
       stream: "canonical",
     });
-    const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
-      Layer.provide(ProviderSessionRuntimeRepositoryLive),
-    );
+    const providerSessionDirectoryLayer = makeProviderSessionDirectoryLayer();
     const codexAdapterLayer = makeCodexAdapterLive(
       nativeEventLogger ? { nativeEventLogger } : undefined,
     );
@@ -100,6 +109,7 @@ export function makeServerRuntimeServicesLayer() {
     Layer.provideMerge(runtimeServicesLayer),
     Layer.provideMerge(gitCoreLayer),
     Layer.provideMerge(textGenerationLayer),
+    Layer.provideMerge(makeProviderSessionDirectoryLayer()),
   );
   const checkpointReactorLayer = CheckpointReactorLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),

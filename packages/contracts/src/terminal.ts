@@ -40,6 +40,7 @@ export const TerminalOpenInput = Schema.Struct({
   cols: Schema.optional(TerminalColsSchema),
   rows: Schema.optional(TerminalRowsSchema),
   env: Schema.optional(TerminalEnvSchema),
+  shell: Schema.optional(Schema.String.check(Schema.isMaxLength(4096))),
 });
 export type TerminalOpenInput = Schema.Codec.Encoded<typeof TerminalOpenInput>;
 
@@ -65,6 +66,7 @@ export const TerminalRestartInput = Schema.Struct({
   cols: TerminalColsSchema,
   rows: TerminalRowsSchema,
   env: Schema.optional(TerminalEnvSchema),
+  shell: Schema.optional(Schema.String.check(Schema.isMaxLength(4096))),
 });
 
 export const TerminalCloseInput = Schema.Struct({

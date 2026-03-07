@@ -34,6 +34,11 @@ import { ProviderCommandReactorLive } from "./ProviderCommandReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { Option } from "effect";
+import {
+  ProviderSessionDirectory,
+  type ProviderSessionDirectoryShape,
+} from "../../provider/Services/ProviderSessionDirectory.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId =>
@@ -190,6 +195,7 @@ describe("ProviderCommandReactor", () => {
           sessionModelSwitch: provider === "codex" ? "in-session" : "in-session",
         }),
       rollbackConversation: () => unsupported(),
+      stopAll: () => Effect.void,
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
     };
 
@@ -199,12 +205,22 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provide(SqlitePersistenceMemory),
     );
+    const providerSessionDirectoryStub: ProviderSessionDirectoryShape = {
+      upsert: () => Effect.void,
+      getProvider: () => Effect.die(new Error("not implemented in test")),
+      getBinding: () => Effect.succeed(Option.none()),
+      remove: () => Effect.void,
+      listThreadIds: () => Effect.succeed([]),
+    };
     const layer = ProviderCommandReactorLive.pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
       Layer.provideMerge(Layer.succeed(GitCore, { renameBranch } as unknown as GitCoreShape)),
       Layer.provideMerge(
         Layer.succeed(TextGeneration, { generateBranchName } as unknown as TextGenerationShape),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(ProviderSessionDirectory, providerSessionDirectoryStub),
       ),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), stateDir)),
       Layer.provideMerge(NodeServices.layer),

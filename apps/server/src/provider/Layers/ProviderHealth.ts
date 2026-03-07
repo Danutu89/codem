@@ -176,10 +176,10 @@ const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.
     (acc, chunk) => acc + new TextDecoder().decode(chunk),
   );
 
-const runCodexCommand = (args: ReadonlyArray<string>) =>
+const runCliCommand = (binary: string, args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const command = ChildProcess.make("codex", [...args], {
+    const command = ChildProcess.make(binary, [...args], {
       shell: process.platform === "win32",
     });
 
@@ -196,6 +196,8 @@ const runCodexCommand = (args: ReadonlyArray<string>) =>
 
     return { stdout, stderr, code: exitCode } satisfies CommandResult;
   }).pipe(Effect.scoped);
+
+const runCodexCommand = (args: ReadonlyArray<string>) => runCliCommand("codex", args);
 
 // ── Health check ────────────────────────────────────────────────────
 
@@ -307,14 +309,87 @@ export const checkCodexProviderStatus: Effect.Effect<
   } satisfies ServerProviderStatus;
 });
 
+// ── Claude Code health check ────────────────────────────────────────
+
+const CLAUDE_PROVIDER = "claudeCode" as const;
+
+export const checkClaudeCodeProviderStatus: Effect.Effect<
+  ServerProviderStatus,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner
+> = Effect.gen(function* () {
+  const checkedAt = new Date().toISOString();
+
+  const versionProbe = yield* runCliCommand("claude", ["--version"]).pipe(
+    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+    Effect.result,
+  );
+
+  if (Result.isFailure(versionProbe)) {
+    const error = versionProbe.failure;
+    const lower = error instanceof Error ? error.message.toLowerCase() : "";
+    const isMissing =
+      lower.includes("enoent") ||
+      lower.includes("notfound") ||
+      lower.includes("command not found");
+    return {
+      provider: CLAUDE_PROVIDER,
+      status: "error" as const,
+      available: false,
+      authStatus: "unknown" as const,
+      checkedAt,
+      message: isMissing
+        ? "Claude Code CLI (`claude`) is not installed or not on PATH."
+        : `Failed to execute Claude Code CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+    };
+  }
+
+  if (Option.isNone(versionProbe.success)) {
+    return {
+      provider: CLAUDE_PROVIDER,
+      status: "error" as const,
+      available: false,
+      authStatus: "unknown" as const,
+      checkedAt,
+      message: "Claude Code CLI is installed but timed out while running command.",
+    };
+  }
+
+  const version = versionProbe.success.value;
+  if (version.code !== 0) {
+    const detail = detailFromResult(version);
+    return {
+      provider: CLAUDE_PROVIDER,
+      status: "error" as const,
+      available: false,
+      authStatus: "unknown" as const,
+      checkedAt,
+      message: detail
+        ? `Claude Code CLI is installed but failed to run. ${detail}`
+        : "Claude Code CLI is installed but failed to run.",
+    };
+  }
+
+  return {
+    provider: CLAUDE_PROVIDER,
+    status: "ready" as const,
+    available: true,
+    authStatus: "authenticated" as const,
+    checkedAt,
+  };
+});
+
 // ── Layer ───────────────────────────────────────────────────────────
 
 export const ProviderHealthLive = Layer.effect(
   ProviderHealth,
   Effect.gen(function* () {
-    const codexStatus = yield* checkCodexProviderStatus;
+    const [codexStatus, claudeStatus] = yield* Effect.all(
+      [checkCodexProviderStatus, checkClaudeCodeProviderStatus],
+      { concurrency: "unbounded" },
+    );
     return {
-      getStatuses: Effect.succeed([codexStatus]),
+      getStatuses: Effect.succeed([codexStatus, claudeStatus]),
     } satisfies ProviderHealthShape;
   }),
 );

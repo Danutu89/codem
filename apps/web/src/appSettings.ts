@@ -32,6 +32,18 @@ const AppSettingsSchema = Schema.Struct({
   customCursorModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
   ),
+  lmStudioEndpoint: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    Schema.withConstructorDefault(() => Option.some("http://localhost:1234/v1")),
+  ),
+  lmStudioModelId: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    Schema.withConstructorDefault(() => Option.some("")),
+  ),
+  defaultTerminal: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    Schema.withConstructorDefault(() => Option.some("")),
+  ),
+  defaultShell: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    Schema.withConstructorDefault(() => Option.some("")),
+  ),
 });
 export type AppSettings = typeof AppSettingsSchema.Type;
 export interface AppModelOption {

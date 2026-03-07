@@ -23,7 +23,7 @@ import {
 } from "@t3tools/contracts";
 import { Effect, Layer, Option, PubSub, Queue, Schema, SchemaIssue, Stream } from "effect";
 
-import { ProviderValidationError } from "../Errors.ts";
+import { ProviderValidationError, type ProviderServiceError } from "../Errors.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
 import {
@@ -475,7 +475,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
       });
 
-    const runStopAll = () =>
+    const runStopAll = (): Effect.Effect<void, ProviderServiceError> =>
       Effect.gen(function* () {
         const threadIds = yield* directory.listThreadIds();
         yield* Effect.forEach(adapters, (adapter) => adapter.stopAll()).pipe(Effect.asVoid);
@@ -514,6 +514,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       respondToRequest,
       respondToUserInput,
       stopSession,
+      stopAll: runStopAll,
       listSessions,
       getCapabilities,
       rollbackConversation,
