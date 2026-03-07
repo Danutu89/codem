@@ -122,6 +122,7 @@ export const ProviderRespondToRequestInput = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
   decision: ProviderApprovalDecision,
+  message: Schema.optional(Schema.String),
 });
 export type ProviderRespondToRequestInput = typeof ProviderRespondToRequestInput.Type;
 

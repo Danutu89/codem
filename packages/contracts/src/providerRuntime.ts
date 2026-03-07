@@ -126,6 +126,7 @@ export const CanonicalRequestType = Schema.Literals([
   "file_change_approval",
   "apply_patch_approval",
   "exec_command_approval",
+  "plan_approval",
   "tool_user_input",
   "dynamic_tool_call",
   "auth_tokens_refresh",

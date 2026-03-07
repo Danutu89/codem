@@ -408,6 +408,7 @@ const ThreadApprovalRespondCommand = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
   decision: ProviderApprovalDecision,
+  message: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
 });
 
@@ -686,6 +687,7 @@ export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
   decision: ProviderApprovalDecision,
+  message: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
 });
 

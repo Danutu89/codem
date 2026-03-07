@@ -34,7 +34,7 @@ export interface WorkLogEntry {
 
 export interface PendingApproval {
   requestId: ApprovalRequestId;
-  requestKind: "command" | "file-read" | "file-change";
+  requestKind: "command" | "file-read" | "file-change" | "plan";
   createdAt: string;
   detail?: string;
 }
@@ -150,6 +150,8 @@ function requestKindFromRequestType(
     case "file_change_approval":
     case "apply_patch_approval":
       return "file-change";
+    case "plan_approval":
+      return "plan";
     default:
       return null;
   }
@@ -174,7 +176,8 @@ export function derivePendingApprovals(
       payload &&
       (payload.requestKind === "command" ||
         payload.requestKind === "file-read" ||
-        payload.requestKind === "file-change")
+        payload.requestKind === "file-change" ||
+        payload.requestKind === "plan")
         ? payload.requestKind
         : payload
           ? requestKindFromRequestType(payload.requestType)

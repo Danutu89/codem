@@ -2153,14 +2153,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
     }
     if (
       phase === "running" ||
-      activePendingApproval !== null ||
+      pendingApprovals.length > 0 ||
       activePendingUserInput !== null ||
       activeThread?.error
     ) {
       resetSendPhase();
     }
   }, [
-    activePendingApproval,
+    pendingApprovals,
     activePendingUserInput,
     activeThread?.error,
     phase,
@@ -2712,7 +2712,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
   };
 
   const onRespondToApproval = useCallback(
-    async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
+    async (
+      requestId: ApprovalRequestId,
+      decision: ProviderApprovalDecision,
+      message?: string,
+    ) => {
       const api = readNativeApi();
       if (!api || !activeThreadId) return;
 
@@ -2726,6 +2730,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           threadId: activeThreadId,
           requestId,
           decision,
+          ...(message ? { message } : {}),
           createdAt: new Date().toISOString(),
         })
         .catch((err: unknown) => {
@@ -3451,6 +3456,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
           activeThreadId={activeThread.id}
           activeThreadTitle={activeThread.title}
           activeProjectName={activeProject?.name}
+          isGitRepo={isGitRepo}
+          openInCwd={activeThread.worktreePath ?? activeProject?.cwd ?? null}
           activeProjectScripts={activeProject?.scripts}
           preferredScriptId={
             activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
@@ -4081,6 +4088,8 @@ interface ChatHeaderProps {
   activeThreadId: ThreadId;
   activeThreadTitle: string;
   activeProjectName: string | undefined;
+  isGitRepo: boolean;
+  openInCwd: string | null;
   activeProjectScripts: ProjectScript[] | undefined;
   preferredScriptId: string | null;
   keybindings: ResolvedKeybindingsConfig;
@@ -4098,6 +4107,8 @@ const ChatHeader = memo(function ChatHeader({
   activeThreadId,
   activeThreadTitle,
   activeProjectName,
+  isGitRepo,
+  openInCwd,
   activeProjectScripts,
   preferredScriptId,
   keybindings,
@@ -4228,6 +4239,7 @@ interface PendingApprovalsPanelProps {
   onRespondToApproval: (
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
+    message?: string,
   ) => Promise<void>;
 }
 
@@ -4236,28 +4248,81 @@ const PendingApprovalsPanel = memo(function PendingApprovalsPanel({
   respondingRequestIds,
   onRespondToApproval,
 }: PendingApprovalsPanelProps) {
+  const [planFeedback, setPlanFeedback] = useState<Record<string, string>>({});
+
   if (pendingApprovals.length === 0) return null;
   return (
     <div className="pt-3 mx-auto max-w-3xl space-y-2">
       {pendingApprovals.map((approval) => {
         const isResponding = respondingRequestIds.includes(approval.requestId);
+        const isPlan = approval.requestKind === "plan";
+        const feedback = planFeedback[approval.requestId] ?? "";
 
         return (
-          <Alert variant="warning" key={approval.requestId}>
+          <Alert variant={isPlan ? "default" : "warning"} key={approval.requestId}>
             <InfoIcon />
             <AlertTitle className="text-xs">
-              {approval.requestKind === "command"
-                ? "Command approval requested"
-                : approval.requestKind === "file-read"
-                  ? "File-read approval requested"
-                  : "File-change approval requested"}
+              {isPlan
+                ? "Plan approval requested"
+                : approval.requestKind === "command"
+                  ? "Command approval requested"
+                  : approval.requestKind === "file-read"
+                    ? "File-read approval requested"
+                    : "File-change approval requested"}
             </AlertTitle>
             <AlertDescription
-              className="truncate block font-mono text-[11px]"
-              title={approval.detail}
+              className={
+                isPlan
+                  ? "block text-xs max-h-80 overflow-y-auto"
+                  : "truncate block font-mono text-[11px]"
+              }
+              title={isPlan ? undefined : approval.detail}
             >
-              {approval.detail}
+              {isPlan && approval.detail ? (
+                <ChatMarkdown text={approval.detail} cwd={undefined} />
+              ) : (
+                approval.detail
+              )}
             </AlertDescription>
+            {isPlan && (
+              <div className="col-start-2! -col-end-1! mt-1.5 flex items-center gap-2">
+                <Input
+                  className="h-7 text-xs flex-1"
+                  placeholder="Suggest changes to the plan..."
+                  value={feedback}
+                  disabled={isResponding}
+                  onChange={(e) =>
+                    setPlanFeedback((prev) => ({
+                      ...prev,
+                      [approval.requestId]: e.target.value,
+                    }))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && feedback.trim()) {
+                      void onRespondToApproval(
+                        approval.requestId,
+                        "decline",
+                        feedback.trim(),
+                      );
+                    }
+                  }}
+                />
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={isResponding || !feedback.trim()}
+                  onClick={() =>
+                    void onRespondToApproval(
+                      approval.requestId,
+                      "decline",
+                      feedback.trim(),
+                    )
+                  }
+                >
+                  Revise
+                </Button>
+              </div>
+            )}
             <AlertAction className="col-start-2! -col-end-1! mt-1.5 sm:row-start-auto sm:row-end-auto">
               <Button
                 size="xs"
@@ -4265,16 +4330,18 @@ const PendingApprovalsPanel = memo(function PendingApprovalsPanel({
                 disabled={isResponding}
                 onClick={() => void onRespondToApproval(approval.requestId, "accept")}
               >
-                Approve once
+                {isPlan ? "Approve plan" : "Approve once"}
               </Button>
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={isResponding}
-                onClick={() => void onRespondToApproval(approval.requestId, "acceptForSession")}
-              >
-                Always allow this session
-              </Button>
+              {!isPlan && (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={isResponding}
+                  onClick={() => void onRespondToApproval(approval.requestId, "acceptForSession")}
+                >
+                  Always allow this session
+                </Button>
+              )}
               <Button
                 size="xs"
                 variant="destructive-outline"

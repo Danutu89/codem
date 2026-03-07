@@ -90,6 +90,12 @@ interface PendingApproval {
   readonly detail?: string;
   readonly suggestions?: ReadonlyArray<PermissionUpdate>;
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
+  declineMessage?: string;
+}
+
+interface PendingUserInput {
+  readonly questionIdToText: ReadonlyMap<string, string>;
+  readonly answers: Deferred.Deferred<Record<string, unknown>>;
 }
 
 interface ToolInFlight {
@@ -107,11 +113,13 @@ interface ClaudeSessionContext {
   readonly startedAt: string;
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
+  readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
   readonly turns: Array<{
     id: TurnId;
     items: Array<unknown>;
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
+  permissionMode: PermissionMode | undefined;
   turnState: ClaudeTurnState | undefined;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
@@ -216,6 +224,9 @@ function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undef
 }
 
 function classifyToolItemType(toolName: string): CanonicalItemType {
+  if (toolName === "TodoWrite") {
+    return "unknown";
+  }
   const normalized = toolName.toLowerCase();
   if (
     normalized.includes("bash") ||
@@ -243,6 +254,9 @@ function classifyToolItemType(toolName: string): CanonicalItemType {
 }
 
 function classifyRequestType(toolName: string): CanonicalRequestType {
+  if (toolName === "ExitPlanMode") {
+    return "plan_approval";
+  }
   const normalized = toolName.toLowerCase();
   if (normalized === "read" || normalized.includes("read file") || normalized.includes("view")) {
     return "file_read_approval";
@@ -253,6 +267,11 @@ function classifyRequestType(toolName: string): CanonicalRequestType {
 }
 
 function summarizeToolRequest(toolName: string, input: Record<string, unknown>): string {
+  // For ExitPlanMode, extract the plan text as the detail
+  if (toolName === "ExitPlanMode" && typeof input.plan === "string") {
+    return input.plan;
+  }
+
   const commandValue = input.command ?? input.cmd;
   const command = typeof commandValue === "string" ? commandValue : undefined;
   if (command && command.trim().length > 0) {
@@ -980,6 +999,60 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
           });
         }
 
+        // Detect TodoWrite tool calls and emit turn.plan.updated
+        if (context.turnState) {
+          const msgContent = (message.message as { content?: unknown })?.content;
+          if (Array.isArray(msgContent)) {
+            for (const block of msgContent) {
+              if (
+                block &&
+                typeof block === "object" &&
+                "type" in block &&
+                (block.type === "tool_use" || block.type === "server_tool_use") &&
+                "name" in block &&
+                block.name === "TodoWrite" &&
+                "input" in block &&
+                block.input &&
+                typeof block.input === "object" &&
+                Array.isArray((block.input as Record<string, unknown>).todos)
+              ) {
+                const todos = (block.input as { todos: Array<Record<string, unknown>> }).todos;
+                const planSteps = todos
+                  .filter((todo) => typeof todo.content === "string")
+                  .map((todo) => ({
+                    step: todo.content as string,
+                    status:
+                      todo.status === "completed"
+                        ? ("completed" as const)
+                        : todo.status === "in_progress"
+                          ? ("inProgress" as const)
+                          : ("pending" as const),
+                  }));
+
+                if (planSteps.length > 0) {
+                  const planStamp = yield* makeEventStamp();
+                  yield* offerRuntimeEvent({
+                    type: "turn.plan.updated",
+                    eventId: planStamp.eventId,
+                    provider: PROVIDER,
+                    createdAt: planStamp.createdAt,
+                    threadId: context.session.threadId,
+                    turnId: asCanonicalTurnId(context.turnState.turnId),
+                    payload: {
+                      explanation: "Task list",
+                      plan: planSteps,
+                    },
+                    providerRefs: {
+                      ...providerThreadRef(context),
+                      providerTurnId: String(context.turnState.turnId),
+                    },
+                  });
+                }
+              }
+            }
+          }
+        }
+
         context.lastAssistantUuid = message.uuid;
         yield* updateResumeCursor(context);
       });
@@ -1360,6 +1433,11 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
         }
         context.pendingApprovals.clear();
 
+        for (const [, pendingInput] of context.pendingUserInputs) {
+          yield* Deferred.succeed(pendingInput.answers, {});
+        }
+        context.pendingUserInputs.clear();
+
         if (context.turnState) {
           yield* completeTurn(context, "interrupted", "Session stopped.");
         }
@@ -1440,6 +1518,7 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
         );
 
         const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
+        const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
         const inFlightTools = new Map<number, ToolInFlight>();
 
         const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
@@ -1455,8 +1534,155 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
                 } satisfies PermissionResult;
               }
 
+              // Intercept AskUserQuestion: surface questions via user-input event pipeline
+              // and block until the user answers in the UI.
+              if (toolName === "AskUserQuestion") {
+                const rawQuestions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
+                const questionIdToText = new Map<string, string>();
+                const eventQuestions = rawQuestions
+                  .map((q: Record<string, unknown>, idx: number) => {
+                    if (!q || typeof q !== "object") return undefined;
+                    const questionText =
+                      typeof q.question === "string" ? q.question.trim() : undefined;
+                    const header = typeof q.header === "string" ? q.header.trim() : undefined;
+                    const options = Array.isArray(q.options)
+                      ? q.options
+                          .map((o: Record<string, unknown>) => {
+                            if (!o || typeof o !== "object") return undefined;
+                            const label =
+                              typeof o.label === "string" ? o.label.trim() : undefined;
+                            const description =
+                              typeof o.description === "string"
+                                ? o.description.trim()
+                                : undefined;
+                            return label && description ? { label, description } : undefined;
+                          })
+                          .filter(
+                            (o): o is { label: string; description: string } => o !== undefined,
+                          )
+                      : [];
+                    if (!questionText || !header || options.length === 0) return undefined;
+                    const id = `q-${idx}`;
+                    questionIdToText.set(id, questionText);
+                    return { id, header, question: questionText, options };
+                  })
+                  .filter(
+                    (
+                      q,
+                    ): q is {
+                      id: string;
+                      header: string;
+                      question: string;
+                      options: Array<{ label: string; description: string }>;
+                    } => q !== undefined,
+                  );
+
+                if (eventQuestions.length === 0) {
+                  return {
+                    behavior: "allow",
+                    updatedInput: toolInput,
+                  } satisfies PermissionResult;
+                }
+
+                const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
+                const answersDeferred = yield* Deferred.make<Record<string, unknown>>();
+                const pending: PendingUserInput = {
+                  questionIdToText,
+                  answers: answersDeferred,
+                };
+
+                const stamp = yield* makeEventStamp();
+                yield* offerRuntimeEvent({
+                  type: "user-input.requested",
+                  eventId: stamp.eventId,
+                  provider: PROVIDER,
+                  createdAt: stamp.createdAt,
+                  threadId: context.session.threadId,
+                  ...(context.turnState
+                    ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
+                    : {}),
+                  requestId: asRuntimeRequestId(requestId),
+                  payload: {
+                    questions: eventQuestions,
+                  },
+                  providerRefs: {
+                    ...(context.session.threadId
+                      ? { providerThreadId: context.session.threadId }
+                      : {}),
+                    ...(context.turnState
+                      ? { providerTurnId: String(context.turnState.turnId) }
+                      : {}),
+                    providerRequestId: requestId,
+                  },
+                  raw: {
+                    source: "claude.sdk.permission",
+                    method: "canUseTool/AskUserQuestion",
+                    payload: { toolName, input: toolInput },
+                  },
+                });
+
+                pendingUserInputs.set(requestId, pending);
+
+                const onAbort = () => {
+                  if (!pendingUserInputs.has(requestId)) return;
+                  pendingUserInputs.delete(requestId);
+                  Effect.runFork(Deferred.succeed(answersDeferred, {}));
+                };
+                callbackOptions.signal.addEventListener("abort", onAbort, { once: true });
+
+                const rawAnswers = yield* Deferred.await(answersDeferred);
+                pendingUserInputs.delete(requestId);
+
+                // Map answers from question IDs back to question text keys (SDK format)
+                const sdkAnswers: Record<string, string> = {};
+                for (const [qId, value] of Object.entries(rawAnswers)) {
+                  const questionText = questionIdToText.get(qId);
+                  if (questionText && typeof value === "string") {
+                    sdkAnswers[questionText] = value;
+                  }
+                }
+
+                // Emit resolved event
+                const resolvedStamp = yield* makeEventStamp();
+                yield* offerRuntimeEvent({
+                  type: "user-input.resolved",
+                  eventId: resolvedStamp.eventId,
+                  provider: PROVIDER,
+                  createdAt: resolvedStamp.createdAt,
+                  threadId: context.session.threadId,
+                  ...(context.turnState
+                    ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
+                    : {}),
+                  requestId: asRuntimeRequestId(requestId),
+                  payload: {
+                    answers: sdkAnswers,
+                  },
+                  providerRefs: {
+                    ...(context.session.threadId
+                      ? { providerThreadId: context.session.threadId }
+                      : {}),
+                    ...(context.turnState
+                      ? { providerTurnId: String(context.turnState.turnId) }
+                      : {}),
+                    providerRequestId: requestId,
+                  },
+                  raw: {
+                    source: "claude.sdk.permission",
+                    method: "canUseTool/AskUserQuestion/resolved",
+                    payload: { answers: sdkAnswers },
+                  },
+                });
+
+                return {
+                  behavior: "allow",
+                  updatedInput: { ...toolInput, answers: sdkAnswers },
+                } satisfies PermissionResult;
+              }
+
               const runtimeMode = input.runtimeMode ?? "full-access";
-              if (runtimeMode === "full-access") {
+              // ExitPlanMode must go through the approval flow even in full-access
+              // so the user can review and approve/deny the plan.
+              if (runtimeMode === "full-access" && toolName !== "ExitPlanMode") {
                 return {
                   behavior: "allow",
                   updatedInput: toolInput,
@@ -1572,7 +1798,9 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
                 message:
                   decision === "cancel"
                     ? "User cancelled tool execution."
-                    : "User declined tool execution.",
+                    : pendingApproval.declineMessage
+                      ? `User declined. Feedback: ${pendingApproval.declineMessage}`
+                      : "User declined tool execution.",
               } satisfies PermissionResult;
             }),
           );
@@ -1659,8 +1887,10 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
           startedAt,
           resumeSessionId: resumeState?.resume,
           pendingApprovals,
+          pendingUserInputs,
           turns: [],
           inFlightTools,
+          permissionMode,
           turnState: undefined,
           lastAssistantUuid: resumeState?.resumeSessionAt,
           lastThreadStartedId: undefined,
@@ -1738,6 +1968,19 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
           yield* Effect.tryPromise({
             try: () => context.query.setModel(input.model),
             catch: (cause) => toRequestError(input.threadId, "turn/setModel", cause),
+          });
+        }
+
+        const desiredPermissionMode: PermissionMode | undefined =
+          input.interactionMode === "plan"
+            ? "plan"
+            : input.interactionMode === "default"
+              ? (context.permissionMode ?? "default")
+              : undefined;
+        if (desiredPermissionMode !== undefined) {
+          yield* Effect.tryPromise({
+            try: () => context.query.setPermissionMode(desiredPermissionMode),
+            catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
           });
         }
 
@@ -1819,6 +2062,7 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
       threadId,
       requestId,
       decision,
+      message,
     ) =>
       Effect.gen(function* () {
         const context = yield* requireSession(threadId);
@@ -1830,6 +2074,9 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
             detail: `Unknown pending approval request: ${requestId}`,
           });
         }
+        if (message) {
+          pending.declineMessage = message;
+        }
 
         context.pendingApprovals.delete(requestId);
         yield* Deferred.succeed(pending.decision, decision);
@@ -1838,15 +2085,22 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
     const respondToUserInput: ClaudeCodeAdapterShape["respondToUserInput"] = (
       threadId,
       requestId,
-      _answers,
+      answers,
     ) =>
-      Effect.fail(
-        new ProviderAdapterRequestError({
-          provider: PROVIDER,
-          method: "item/tool/requestUserInput",
-          detail: `Claude Code does not yet support structured user-input responses for thread '${threadId}' and request '${requestId}'.`,
-        }),
-      );
+      Effect.gen(function* () {
+        const context = yield* requireSession(threadId);
+        const pending = context.pendingUserInputs.get(requestId);
+        if (!pending) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "item/tool/requestUserInput",
+            detail: `Unknown pending user-input request: ${requestId}`,
+          });
+        }
+
+        context.pendingUserInputs.delete(requestId);
+        yield* Deferred.succeed(pending.answers, answers);
+      });
 
     const stopSession: ClaudeCodeAdapterShape["stopSession"] = (threadId) =>
       Effect.gen(function* () {
