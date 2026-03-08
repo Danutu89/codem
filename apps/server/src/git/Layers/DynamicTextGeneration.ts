@@ -29,9 +29,10 @@ export const DynamicTextGenerationLive = Layer.effect(
     const claude = yield* ClaudeTextGenerationTag;
     const codex = yield* CodexTextGenerationTag;
 
-    const resolve = Effect.map(activeProvider.get, (kind) =>
-      kind === "codex" ? codex : claude,
-    );
+    const resolve = Effect.map(activeProvider.get, (kind) => {
+      console.log("[DynamicTextGeneration] active provider:", kind);
+      return kind === "codex" ? codex : claude;
+    });
 
     return {
       generateCommitMessage: (input) =>

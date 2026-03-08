@@ -151,7 +151,7 @@ function runClaudeJson<S extends Schema.Top & { readonly DecodingServices: never
         );
       },
       catch: (cause) => {
-        if (cause instanceof TextGenerationError) return cause;
+        if (Schema.is(TextGenerationError)(cause)) return cause;
         const msg = cause instanceof Error ? cause.message : String(cause);
         return new TextGenerationError({
           operation,

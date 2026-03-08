@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 /**
  * AI-powered browser test runner.
  *
@@ -10,7 +11,7 @@
  */
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { createOpenAI } from "@ai-sdk/openai";
-import { generateText, jsonSchema, tool } from "ai";
+import { generateText, jsonSchema, stepCountIs, tool } from "ai";
 import type { BrowserTestResult, BrowserTestStepResult } from "@t3tools/contracts";
 
 export interface BrowserTestCallbacks {
@@ -90,7 +91,7 @@ async function runSimplify(
       if (SKIP_TAGS.has(tag)) return "";
 
       const attrs: string[] = [];
-      for (const attr of el.attributes) {
+      for (const attr of Array.from(el.attributes)) {
         if (KEEP_ATTRS.has(attr.name)) {
           attrs.push(`${attr.name}="${attr.value}"`);
         }
@@ -105,7 +106,7 @@ async function runSimplify(
 
       const childParts: string[] = [];
       let skippedChildren = 0;
-      for (const child of el.childNodes) {
+      for (const child of Array.from(el.childNodes)) {
         if (spent >= budget) {
           skippedChildren++;
           continue;
@@ -247,10 +248,9 @@ export async function runBrowserTest(options: {
     const lmStudio = createOpenAI({
       baseURL: lmStudioEndpoint,
       apiKey: "lm-studio",
-      compatibility: "compatible",
     });
     const modelId = lmStudioModelId || "default";
-    const model = lmStudio.chat(modelId, { structuredOutputs: false });
+    const model = lmStudio.chat(modelId);
 
     const hasAgentContext = !!instructions?.trim();
     const hasUserPrompt = !!userPrompt?.trim();
@@ -587,7 +587,7 @@ Choose your next action. Do NOT repeat any action from the list above. If you ha
           }),
         },
         toolChoice: "required",
-        maxSteps: 2, // tool call + result, then stop
+        stopWhen: stepCountIs(2), // tool call + result, then stop
         maxOutputTokens: 1024,
         abortSignal: abortController.signal,
       });

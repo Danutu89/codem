@@ -197,7 +197,7 @@ function BrowserTestPanel({ projectId, agentSummary, userPrompt }: { projectId: 
           unsubscribeRef.current = null;
         }
       });
-  }, [appUrl, agentSummary, settings.lmStudioEndpoint, settings.lmStudioModelId]);
+  }, [appUrl, agentSummary, userPrompt, settings.lmStudioEndpoint, settings.lmStudioModelId]);
 
   const handleStopTest = useCallback(() => {
     const api = ensureNativeApi();

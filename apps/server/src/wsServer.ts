@@ -56,7 +56,6 @@ import { ProviderService } from "./provider/Services/ProviderService";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { clamp } from "effect/Number";
-import { expandHomePath } from "./os-jank";
 import { Open, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
@@ -74,6 +73,7 @@ import {
 } from "./attachmentStore.ts";
 import { parseBase64DataUrl } from "./imageMime.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
+import { expandHomePath } from "./os-jank.ts";
 import {
   runBrowserTest,
   stopBrowserTest,
@@ -827,6 +827,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.gitRunStackedAction: {
         const body = stripRequestTag(request.body);
+        console.log("[wsServer] gitRunStackedAction body.provider:", body.provider);
         // Sync the text-generation provider so commit messages use the correct CLI.
         // Prefer the explicit provider sent by the client; fall back to inferring
         // from the orchestration read model for backwards compatibility.
@@ -835,6 +836,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           body.provider === "claudeCode" ||
           body.provider === "cursor"
         ) {
+          console.log("[wsServer] setting activeTextGenProvider to:", body.provider);
           yield* activeTextGenProvider.set(body.provider);
         } else {
           yield* Effect.gen(function* () {
@@ -944,7 +946,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               userPrompt: body.userPrompt,
               callbacks: {
                 onRunning: (message) => {
-                  Effect.runFork(
+                  void runPromise(
                     broadcastPush({
                       type: "push",
                       channel: WS_CHANNELS.browserTestProgress,
@@ -953,7 +955,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                   );
                 },
                 onStep: (step) => {
-                  Effect.runFork(
+                  void runPromise(
                     broadcastPush({
                       type: "push",
                       channel: WS_CHANNELS.browserTestProgress,
@@ -966,7 +968,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                   );
                 },
                 onCompleted: (testResult) => {
-                  Effect.runFork(
+                  void runPromise(
                     broadcastPush({
                       type: "push",
                       channel: WS_CHANNELS.browserTestProgress,
@@ -984,7 +986,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                   );
                 },
                 onError: (error) => {
-                  Effect.runFork(
+                  void runPromise(
                     broadcastPush({
                       type: "push",
                       channel: WS_CHANNELS.browserTestProgress,

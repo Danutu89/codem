@@ -10,6 +10,7 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   noExternal: (id) => id.startsWith("@t3tools/"),
+  external: ["open", "playwright"],
   inlineOnly: false,
   banner: {
     js: "#!/usr/bin/env node\n",

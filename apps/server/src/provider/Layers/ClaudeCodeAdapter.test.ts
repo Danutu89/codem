@@ -279,17 +279,21 @@ describe("ClaudeCodeAdapterLive", () => {
         const signal = new AbortController().signal;
 
         // A regular edit tool must be DENIED in plan mode.
-        const editResult = (await canUseTool!("Write", { path: "src/foo.ts", content: "x" }, {
-          signal,
-          suggestions: [],
-        })) as PermissionResult;
+        const editResult = (yield* Effect.promise(() =>
+          canUseTool!("Write", { path: "src/foo.ts", content: "x" }, {
+            signal,
+            toolUseID: "test-edit-1",
+          }),
+        )) as PermissionResult;
         assert.equal(editResult.behavior, "deny");
 
         // A Bash command must also be DENIED in plan mode.
-        const bashResult = (await canUseTool!("Bash", { command: "rm -rf dist" }, {
-          signal,
-          suggestions: [],
-        })) as PermissionResult;
+        const bashResult = (yield* Effect.promise(() =>
+          canUseTool!("Bash", { command: "rm -rf dist" }, {
+            signal,
+            toolUseID: "test-bash-1",
+          }),
+        )) as PermissionResult;
         assert.equal(bashResult.behavior, "deny");
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
