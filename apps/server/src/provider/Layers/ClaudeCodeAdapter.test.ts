@@ -192,7 +192,12 @@ describe("ClaudeCodeAdapterLive", () => {
     );
   });
 
-  it.effect("derives bypass permission mode from full-access runtime policy", () => {
+  it.effect("does not set a permission mode for full-access runtime sessions", () => {
+    // Full-access sessions must NOT use bypassPermissions/allowDangerouslySkipPermissions
+    // because that flag skips canUseTool entirely, which prevents plan-mode enforcement
+    // when the user switches interaction modes mid-session.  canUseTool already allows
+    // every tool for full-access mode, so omitting bypassPermissions is functionally
+    // equivalent for normal use while keeping plan-mode switching reliable.
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeCodeAdapter;
@@ -203,8 +208,8 @@ describe("ClaudeCodeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.permissionMode, "bypassPermissions");
-      assert.equal(createInput?.options.allowDangerouslySkipPermissions, true);
+      assert.equal(createInput?.options.permissionMode, undefined);
+      assert.equal(createInput?.options.allowDangerouslySkipPermissions, undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -234,6 +239,64 @@ describe("ClaudeCodeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect(
+    "denies non-ExitPlanMode tools when switching to plan mode mid-session on a full-access thread",
+    () => {
+      // Regression: full-access sessions must NOT use bypassPermissions/
+      // allowDangerouslySkipPermissions because that skips canUseTool entirely.
+      // This test verifies that after sendTurn with interactionMode:"plan" the
+      // canUseTool callback correctly blocks ordinary edit tools.
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeCodeAdapter;
+
+        // Start a normal full-access session (simulates an existing thread).
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeCode",
+          runtimeMode: "full-access",
+        });
+
+        // The session must NOT have bypassPermissions so canUseTool is reachable.
+        const createInput = harness.getLastCreateQueryInput();
+        assert.equal(createInput?.options.permissionMode, undefined);
+        assert.equal(createInput?.options.allowDangerouslySkipPermissions, undefined);
+
+        // User switches to plan mode and sends a turn mid-session.
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "plan this refactor",
+          interactionMode: "plan",
+        });
+
+        // The SDK must have received a setPermissionMode("plan") call.
+        assert.deepEqual(harness.query.setPermissionModeCalls, ["plan"]);
+
+        // Invoke the canUseTool callback directly (same closure the SDK would call).
+        const canUseTool = createInput?.options.canUseTool;
+        assert.ok(canUseTool, "canUseTool must be registered in query options");
+        const signal = new AbortController().signal;
+
+        // A regular edit tool must be DENIED in plan mode.
+        const editResult = (await canUseTool!("Write", { path: "src/foo.ts", content: "x" }, {
+          signal,
+          suggestions: [],
+        })) as PermissionResult;
+        assert.equal(editResult.behavior, "deny");
+
+        // A Bash command must also be DENIED in plan mode.
+        const bashResult = (await canUseTool!("Bash", { command: "rm -rf dist" }, {
+          signal,
+          suggestions: [],
+        })) as PermissionResult;
+        assert.equal(bashResult.behavior, "deny");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect("maps Claude stream/runtime messages to canonical provider runtime events", () => {
     const harness = makeHarness();

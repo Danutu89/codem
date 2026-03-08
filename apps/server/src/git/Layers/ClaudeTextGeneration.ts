@@ -1,24 +1,19 @@
 /**
- * ClaudeTextGeneration - Text generation implementation using the Claude CLI.
+ * ClaudeTextGeneration - Text generation using the Claude Agent SDK.
  *
- * Mirrors the architecture of {@link CodexTextGeneration} but spawns the
- * `claude` CLI (`claude -p --output-format json --json-schema ...`) to
- * generate commit messages, PR content, and branch names.
+ * Uses `@anthropic-ai/claude-agent-sdk` `query()` with `outputFormat`
+ * (json_schema) and `permissionMode: "plan"` for one-shot structured
+ * generation of commit messages, PR content, and branch names.
  *
  * @module ClaudeTextGeneration
  */
-import { randomUUID } from "node:crypto";
-
-import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { Effect, Layer, Schema } from "effect";
 
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
-import { ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "../Errors.ts";
 import {
-  type BranchNameGenerationInput,
   type BranchNameGenerationResult,
   type CommitMessageGenerationResult,
   type PrContentGenerationResult,
@@ -29,51 +24,15 @@ import { ClaudeTextGenerationTag } from "../Services/TextGenerationTags.ts";
 const CLAUDE_DEFAULT_MODEL = "claude-sonnet-4-6";
 const CLAUDE_TIMEOUT_MS = 180_000;
 
-function toJsonSchemaObject(schema: Schema.Top): string {
+function toJsonSchemaObject(schema: Schema.Top): Record<string, unknown> {
   const document = Schema.toJsonSchemaDocument(schema);
   if (document.definitions && Object.keys(document.definitions).length > 0) {
-    return JSON.stringify({
+    return {
       ...document.schema,
       $defs: document.definitions,
-    });
+    } as Record<string, unknown>;
   }
-  return JSON.stringify(document.schema);
-}
-
-function normalizeClaudeError(
-  operation: string,
-  error: unknown,
-  fallback: string,
-): TextGenerationError {
-  if (Schema.is(TextGenerationError)(error)) {
-    return error;
-  }
-
-  if (error instanceof Error) {
-    const lower = error.message.toLowerCase();
-    if (
-      error.message.includes("Command not found: claude") ||
-      lower.includes("spawn claude") ||
-      lower.includes("enoent")
-    ) {
-      return new TextGenerationError({
-        operation,
-        detail: "Claude CLI (`claude`) is required but not available on PATH.",
-        cause: error,
-      });
-    }
-    return new TextGenerationError({
-      operation,
-      detail: `${fallback}: ${error.message}`,
-      cause: error,
-    });
-  }
-
-  return new TextGenerationError({
-    operation,
-    detail: fallback,
-    cause: error,
-  });
+  return document.schema as Record<string, unknown>;
 }
 
 function limitSection(value: string, maxChars: number): string {
@@ -103,246 +62,144 @@ function sanitizePrTitle(raw: string): string {
   return "Update project changes";
 }
 
-const makeClaudeTextGeneration = Effect.gen(function* () {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const pathService = yield* Path.Path;
-  const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const serverConfig = yield* Effect.service(ServerConfig);
+/**
+ * Run a one-shot Claude query with structured JSON output via the Agent SDK.
+ *
+ * Uses `permissionMode: "plan"` so no tools are executed.
+ */
+function runClaudeJson<S extends Schema.Top & { readonly DecodingServices: never }>({
+  operation,
+  cwd,
+  prompt,
+  outputSchemaJson,
+}: {
+  operation: "generateCommitMessage" | "generatePrContent" | "generateBranchName";
+  cwd: string;
+  prompt: string;
+  outputSchemaJson: S;
+}): Effect.Effect<S["Type"], TextGenerationError> {
+  return Effect.gen(function* () {
+    const jsonSchema = toJsonSchemaObject(outputSchemaJson);
 
-  type MaterializedImageAttachments = {
-    readonly imagePaths: ReadonlyArray<string>;
-  };
+    const result = yield* Effect.tryPromise({
+      try: (signal) => {
+        return new Promise<{ result: string; structured_output?: unknown }>(
+          (resolve, reject) => {
+            const timeout = setTimeout(() => {
+              queryRuntime.close();
+              reject(
+                new TextGenerationError({
+                  operation,
+                  detail: "Claude SDK request timed out.",
+                }),
+              );
+            }, CLAUDE_TIMEOUT_MS);
 
-  const readStreamAsString = <E>(
-    operation: string,
-    stream: Stream.Stream<Uint8Array, E>,
-  ): Effect.Effect<string, TextGenerationError> =>
-    Effect.gen(function* () {
-      let text = "";
-      yield* Stream.runForEach(stream, (chunk) =>
-        Effect.sync(() => {
-          text += Buffer.from(chunk).toString("utf8");
-        }),
-      ).pipe(
-        Effect.mapError((cause) =>
-          normalizeClaudeError(operation, cause, "Failed to collect process output"),
-        ),
-      );
-      return text;
-    });
+            signal.addEventListener("abort", () => {
+              clearTimeout(timeout);
+              queryRuntime.close();
+            });
 
-  const tempDir = process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP ?? "/tmp";
+            const queryRuntime = query({
+              prompt,
+              options: {
+                cwd,
+                model: CLAUDE_DEFAULT_MODEL,
+                permissionMode: "plan",
+                outputFormat: {
+                  type: "json_schema",
+                  schema: jsonSchema,
+                },
+              },
+            });
 
-  const writeTempFile = (
-    operation: string,
-    prefix: string,
-    content: string,
-  ): Effect.Effect<string, TextGenerationError> => {
-    const filePath = pathService.join(
-      tempDir,
-      `t3code-${prefix}-${process.pid}-${randomUUID()}.tmp`,
-    );
-    return fileSystem.writeFileString(filePath, content).pipe(
-      Effect.mapError(
-        (cause) =>
-          new TextGenerationError({
-            operation,
-            detail: `Failed to write temp file at ${filePath}.`,
-            cause,
-          }),
-      ),
-      Effect.as(filePath),
-    );
-  };
-
-  const safeUnlink = (filePath: string): Effect.Effect<void, never> =>
-    fileSystem.remove(filePath).pipe(Effect.catch(() => Effect.void));
-
-  const materializeImageAttachments = (
-    _operation: "generateCommitMessage" | "generatePrContent" | "generateBranchName",
-    attachments: BranchNameGenerationInput["attachments"],
-  ): Effect.Effect<MaterializedImageAttachments, TextGenerationError> =>
-    Effect.gen(function* () {
-      if (!attachments || attachments.length === 0) {
-        return { imagePaths: [] };
-      }
-
-      const imagePaths: string[] = [];
-      for (const attachment of attachments) {
-        if (attachment.type !== "image") {
-          continue;
-        }
-
-        const resolvedPath = resolveAttachmentPath({
-          stateDir: serverConfig.stateDir,
-          attachment,
-        });
-        if (!resolvedPath || !pathService.isAbsolute(resolvedPath)) {
-          continue;
-        }
-        const fileInfo = yield* fileSystem
-          .stat(resolvedPath)
-          .pipe(Effect.catch(() => Effect.succeed(null)));
-        if (!fileInfo || fileInfo.type !== "File") {
-          continue;
-        }
-        imagePaths.push(resolvedPath);
-      }
-      return { imagePaths };
-    });
-
-  /**
-   * Spawn `claude -p --output-format json --json-schema <schema> <prompt>`
-   * and parse the structured JSON output.
-   */
-  const runClaudeJson = <S extends Schema.Top>({
-    operation,
-    cwd,
-    prompt,
-    outputSchemaJson,
-    _imagePaths = [],
-    cleanupPaths = [],
-  }: {
-    operation: "generateCommitMessage" | "generatePrContent" | "generateBranchName";
-    cwd: string;
-    prompt: string;
-    outputSchemaJson: S;
-    _imagePaths?: ReadonlyArray<string>;
-    cleanupPaths?: ReadonlyArray<string>;
-  }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
-    Effect.gen(function* () {
-      const promptPath = yield* writeTempFile(operation, "claude-prompt", prompt);
-
-      const runClaudeCommand = Effect.gen(function* () {
-        const jsonSchema = toJsonSchemaObject(outputSchemaJson);
-
-        const command = ChildProcess.make(
-          "claude",
-          [
-            "-p",
-            "--output-format",
-            "json",
-            "--model",
-            CLAUDE_DEFAULT_MODEL,
-            "--json-schema",
-            jsonSchema,
-            "--permission-mode",
-            "plan",
-            "--no-session-persistence",
-          ],
-          {
-            cwd,
-            shell: process.platform === "win32",
-            stdin: {
-              stream: Stream.make(new TextEncoder().encode(prompt)),
-            },
+            (async () => {
+              try {
+                for await (const message of queryRuntime as AsyncIterable<SDKMessage>) {
+                  if (message.type === "result") {
+                    clearTimeout(timeout);
+                    if (message.subtype === "success") {
+                      resolve({
+                        result: message.result,
+                        structured_output: (message as Record<string, unknown>)
+                          .structured_output,
+                      });
+                    } else {
+                      reject(
+                        new TextGenerationError({
+                          operation,
+                          detail: `Claude SDK query failed: ${(message as { errors?: string[] }).errors?.join(", ") ?? "unknown error"}`,
+                        }),
+                      );
+                    }
+                    return;
+                  }
+                }
+                clearTimeout(timeout);
+                reject(
+                  new TextGenerationError({
+                    operation,
+                    detail: "Claude SDK query ended without a result message.",
+                  }),
+                );
+              } catch (err) {
+                clearTimeout(timeout);
+                reject(err);
+              }
+            })();
           },
         );
-
-        const child = yield* commandSpawner
-          .spawn(command)
-          .pipe(
-            Effect.mapError((cause) =>
-              normalizeClaudeError(operation, cause, "Failed to spawn Claude CLI process"),
-            ),
-          );
-
-        const [stdout, stderr, exitCode] = yield* Effect.all(
-          [
-            readStreamAsString(operation, child.stdout),
-            readStreamAsString(operation, child.stderr),
-            child.exitCode.pipe(
-              Effect.map((value) => Number(value)),
-              Effect.mapError((cause) =>
-                normalizeClaudeError(operation, cause, "Failed to read Claude CLI exit code"),
-              ),
-            ),
-          ],
-          { concurrency: "unbounded" },
-        );
-
-        if (exitCode !== 0) {
-          const stderrDetail = stderr.trim();
-          const stdoutDetail = stdout.trim();
-          const detail = stderrDetail.length > 0 ? stderrDetail : stdoutDetail;
-          return yield* new TextGenerationError({
-            operation,
-            detail:
-              detail.length > 0
-                ? `Claude CLI command failed: ${detail}`
-                : `Claude CLI command failed with code ${exitCode}.`,
-          });
-        }
-
-        return stdout;
-      });
-
-      const cleanup = Effect.all(
-        [promptPath, ...cleanupPaths].map((filePath) => safeUnlink(filePath)),
-        { concurrency: "unbounded" },
-      ).pipe(Effect.asVoid);
-
-      return yield* Effect.gen(function* () {
-        const rawOutput = yield* runClaudeCommand.pipe(
-          Effect.scoped,
-          Effect.timeoutOption(CLAUDE_TIMEOUT_MS),
-          Effect.flatMap(
-            Option.match({
-              onNone: () =>
-                Effect.fail(
-                  new TextGenerationError({ operation, detail: "Claude CLI request timed out." }),
-                ),
-              onSome: (stdout) => Effect.succeed(stdout),
-            }),
-          ),
-        );
-
-        // Claude --output-format json wraps the result in a JSON envelope.
-        // The actual content is in the `result` field as a string, which itself
-        // is the JSON we asked for via --json-schema.
-        const parsed = yield* Effect.try({
-          try: () => JSON.parse(rawOutput) as unknown,
-          catch: (cause) =>
-            new TextGenerationError({
-              operation,
-              detail: "Failed to parse Claude CLI JSON output.",
-              cause,
-            }),
+      },
+      catch: (cause) => {
+        if (cause instanceof TextGenerationError) return cause;
+        const msg = cause instanceof Error ? cause.message : String(cause);
+        return new TextGenerationError({
+          operation,
+          detail: `Claude SDK query failed: ${msg}`,
+          cause,
         });
-
-        // Extract the result string from the Claude JSON envelope
-        let resultJson: string;
-        if (
-          parsed &&
-          typeof parsed === "object" &&
-          "result" in parsed &&
-          typeof (parsed as Record<string, unknown>).result === "string"
-        ) {
-          resultJson = (parsed as Record<string, unknown>).result as string;
-        } else if (typeof parsed === "string") {
-          resultJson = parsed;
-        } else {
-          // If the output is already the structured object, stringify for schema decode
-          resultJson = JSON.stringify(parsed);
-        }
-
-        return yield* Schema.decodeEffect(Schema.fromJsonString(outputSchemaJson))(
-          resultJson,
-        ).pipe(
-          Effect.catchTag("SchemaError", (cause) =>
-            Effect.fail(
-              new TextGenerationError({
-                operation,
-                detail: "Claude returned invalid structured output.",
-                cause,
-              }),
-            ),
-          ),
-        );
-      }).pipe(Effect.ensuring(cleanup));
+      },
     });
 
-  const generateCommitMessage: TextGenerationShape["generateCommitMessage"] = (input) => {
+    // Prefer structured_output if available, otherwise parse the result string
+    const resultData: unknown =
+      result.structured_output != null
+        ? result.structured_output
+        : (() => {
+            try {
+              return JSON.parse(result.result) as unknown;
+            } catch {
+              return null;
+            }
+          })();
+
+    if (resultData != null && typeof resultData === "object") {
+      return yield* Effect.try({
+        try: () => Schema.decodeUnknownSync(outputSchemaJson)(resultData),
+        catch: (cause) =>
+          new TextGenerationError({
+            operation,
+            detail: "Claude returned invalid structured output.",
+            cause,
+          }),
+      });
+    }
+
+    // Fallback: decode the result string as JSON
+    return yield* Effect.try({
+      try: () => Schema.decodeUnknownSync(Schema.fromJsonString(outputSchemaJson))(result.result),
+      catch: (cause) =>
+        new TextGenerationError({
+          operation,
+          detail: "Claude returned invalid structured output.",
+          cause,
+        }),
+    });
+  });
+}
+
+const makeClaudeTextGeneration = Effect.succeed({
+  generateCommitMessage: (input) => {
     const wantsBranch = input.includeBranch === true;
 
     const prompt = [
@@ -395,9 +252,9 @@ const makeClaudeTextGeneration = Effect.gen(function* () {
           }) satisfies CommitMessageGenerationResult,
       ),
     );
-  };
+  },
 
-  const generatePrContent: TextGenerationShape["generatePrContent"] = (input) => {
+  generatePrContent: (input) => {
     const prompt = [
       "You write GitHub pull request content.",
       "Return a JSON object with keys: title, body.",
@@ -437,62 +294,52 @@ const makeClaudeTextGeneration = Effect.gen(function* () {
           }) satisfies PrContentGenerationResult,
       ),
     );
-  };
+  },
 
-  const generateBranchName: TextGenerationShape["generateBranchName"] = (input) => {
-    return Effect.gen(function* () {
-      const { imagePaths: _imagePaths } = yield* materializeImageAttachments(
-        "generateBranchName",
-        input.attachments,
-      );
-      const attachmentLines = (input.attachments ?? []).map(
-        (attachment) =>
-          `- ${attachment.name} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,
-      );
+  generateBranchName: (input) => {
+    const attachmentLines = (input.attachments ?? []).map(
+      (attachment) =>
+        `- ${attachment.name} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,
+    );
 
-      const promptSections = [
-        "You generate concise git branch names.",
-        "Return a JSON object with key: branch.",
-        "Rules:",
-        "- Branch should describe the requested work from the user message.",
-        "- Keep it short and specific (2-6 words).",
-        "- Use plain words only, no issue prefixes and no punctuation-heavy text.",
-        "- If images are attached, use them as primary context for visual/UI issues.",
+    const promptSections = [
+      "You generate concise git branch names.",
+      "Return a JSON object with key: branch.",
+      "Rules:",
+      "- Branch should describe the requested work from the user message.",
+      "- Keep it short and specific (2-6 words).",
+      "- Use plain words only, no issue prefixes and no punctuation-heavy text.",
+      "- If images are attached, use them as primary context for visual/UI issues.",
+      "",
+      "User message:",
+      limitSection(input.message, 8_000),
+    ];
+    if (attachmentLines.length > 0) {
+      promptSections.push(
         "",
-        "User message:",
-        limitSection(input.message, 8_000),
-      ];
-      if (attachmentLines.length > 0) {
-        promptSections.push(
-          "",
-          "Attachment metadata:",
-          limitSection(attachmentLines.join("\n"), 4_000),
-        );
-      }
-      const prompt = promptSections.join("\n");
+        "Attachment metadata:",
+        limitSection(attachmentLines.join("\n"), 4_000),
+      );
+    }
+    const prompt = promptSections.join("\n");
 
-      const generated = yield* runClaudeJson({
-        operation: "generateBranchName",
-        cwd: input.cwd,
-        prompt,
-        outputSchemaJson: Schema.Struct({
-          branch: Schema.String,
-        }),
-        _imagePaths,
-      });
-
-      return {
-        branch: sanitizeBranchFragment(generated.branch),
-      } satisfies BranchNameGenerationResult;
-    });
-  };
-
-  return {
-    generateCommitMessage,
-    generatePrContent,
-    generateBranchName,
-  } satisfies TextGenerationShape;
-});
+    return runClaudeJson({
+      operation: "generateBranchName",
+      cwd: input.cwd,
+      prompt,
+      outputSchemaJson: Schema.Struct({
+        branch: Schema.String,
+      }),
+    }).pipe(
+      Effect.map(
+        (generated) =>
+          ({
+            branch: sanitizeBranchFragment(generated.branch),
+          }) satisfies BranchNameGenerationResult,
+      ),
+    );
+  },
+} satisfies TextGenerationShape);
 
 export const ClaudeTextGenerationLive = Layer.effect(
   ClaudeTextGenerationTag,

@@ -56,6 +56,7 @@ import { ProviderService } from "./provider/Services/ProviderService";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { clamp } from "effect/Number";
+import { expandHomePath } from "./os-jank";
 import { Open, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
@@ -826,6 +827,31 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.gitRunStackedAction: {
         const body = stripRequestTag(request.body);
+        // Sync the text-generation provider so commit messages use the correct CLI.
+        // Prefer the explicit provider sent by the client; fall back to inferring
+        // from the orchestration read model for backwards compatibility.
+        if (
+          body.provider === "codex" ||
+          body.provider === "claudeCode" ||
+          body.provider === "cursor"
+        ) {
+          yield* activeTextGenProvider.set(body.provider);
+        } else {
+          yield* Effect.gen(function* () {
+            const snapshot = yield* projectionReadModelQuery.getSnapshot();
+            const activeThread = snapshot.threads
+              .filter((t) => t.session && t.session.status !== "stopped" && t.session.providerName)
+              .sort((a, b) => (b.session!.updatedAt > a.session!.updatedAt ? 1 : -1))[0];
+            const providerName = activeThread?.session?.providerName;
+            if (
+              providerName === "codex" ||
+              providerName === "claudeCode" ||
+              providerName === "cursor"
+            ) {
+              yield* activeTextGenProvider.set(providerName);
+            }
+          }).pipe(Effect.catch(() => Effect.void));
+        }
         return yield* gitManager.runStackedAction(body);
       }
 

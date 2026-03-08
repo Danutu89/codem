@@ -225,8 +225,8 @@ function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undef
 }
 
 function classifyToolItemType(toolName: string): CanonicalItemType {
-  if (toolName === "TodoWrite") {
-    return "unknown";
+  if (toolName === "TodoWrite" || toolName === "TodoRead") {
+    return "plan";
   }
   const normalized = toolName.toLowerCase();
   if (
@@ -1817,9 +1817,14 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
           );
 
         const providerOptions = input.providerOptions?.claudeCode;
-        const permissionMode =
-          toPermissionMode(providerOptions?.permissionMode) ??
-          (input.runtimeMode === "full-access" ? "bypassPermissions" : undefined);
+        // Only honour an explicitly-configured permission mode from provider
+        // options.  We intentionally do NOT map full-access → bypassPermissions
+        // here: bypassPermissions + allowDangerouslySkipPermissions causes the
+        // SDK to skip the canUseTool callback entirely, which prevents plan-mode
+        // enforcement when the user switches interaction modes mid-session.
+        // Instead, canUseTool handles the full-access allow-all policy and the
+        // plan-mode deny policy in one place.
+        const permissionMode = toPermissionMode(providerOptions?.permissionMode);
 
         const queryOptions: ClaudeQueryOptions = {
           ...(input.cwd ? { cwd: input.cwd } : {}),

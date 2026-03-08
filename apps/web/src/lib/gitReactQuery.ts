@@ -1,4 +1,4 @@
-import type { GitStackedAction } from "@t3tools/contracts";
+import type { GitStackedAction, ProviderKind } from "@t3tools/contracts";
 import { mutationOptions, queryOptions, type QueryClient } from "@tanstack/react-query";
 import { ensureNativeApi } from "../nativeApi";
 
@@ -97,10 +97,12 @@ export function gitRunStackedActionMutationOptions(input: {
       action,
       commitMessage,
       featureBranch,
+      provider,
     }: {
       action: GitStackedAction;
       commitMessage?: string;
       featureBranch?: boolean;
+      provider?: ProviderKind;
     }) => {
       const api = ensureNativeApi();
       if (!input.cwd) throw new Error("Git action is unavailable.");
@@ -109,6 +111,7 @@ export function gitRunStackedActionMutationOptions(input: {
         action,
         ...(commitMessage ? { commitMessage } : {}),
         ...(featureBranch ? { featureBranch } : {}),
+        ...(provider ? { provider } : {}),
       });
     },
     onSettled: async () => {

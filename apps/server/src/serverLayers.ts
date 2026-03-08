@@ -32,8 +32,8 @@ import { KeybindingsLive } from "./keybindings";
 import { GitManagerLive } from "./git/Layers/GitManager";
 import { GitCoreLive } from "./git/Layers/GitCore";
 import { GitHubCliLive } from "./git/Layers/GitHubCli";
-import { CodexTextGenerationImplLive } from "./git/Layers/CodexTextGeneration";
 import { ClaudeTextGenerationLive } from "./git/Layers/ClaudeTextGeneration";
+import { CodexTextGenerationImplLive } from "./git/Layers/CodexTextGeneration";
 import { DynamicTextGenerationLive } from "./git/Layers/DynamicTextGeneration";
 import { ActiveTextGenProviderLive } from "./git/Services/ActiveTextGenProvider";
 import { GitServiceLive } from "./git/Layers/GitService";
@@ -86,10 +86,10 @@ export function makeServerProviderLayer(): Layer.Layer<
 
 export function makeServerRuntimeServicesLayer() {
   const gitCoreLayer = GitCoreLive.pipe(Layer.provideMerge(GitServiceLive));
+  const activeTextGenProviderLayer = ActiveTextGenProviderLive;
   const textGenerationLayer = DynamicTextGenerationLive.pipe(
-    Layer.provide(CodexTextGenerationImplLive),
     Layer.provide(ClaudeTextGenerationLive),
-    Layer.provideMerge(ActiveTextGenProviderLive),
+    Layer.provide(CodexTextGenerationImplLive),
   );
 
   const orchestrationLayer = OrchestrationEngineLive.pipe(
@@ -148,5 +148,8 @@ export function makeServerRuntimeServicesLayer() {
     textGenerationLayer,
     terminalLayer,
     KeybindingsLive,
-  ).pipe(Layer.provideMerge(NodeServices.layer));
+  ).pipe(
+    Layer.provideMerge(activeTextGenProviderLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
 }

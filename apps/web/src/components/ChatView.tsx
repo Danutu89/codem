@@ -131,16 +131,20 @@ import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
 import {
   BotIcon,
+  CheckCircle2Icon,
   ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  CircleIcon,
   FileIcon,
   FolderIcon,
   DiffIcon,
   EllipsisIcon,
   FolderClosedIcon,
   InfoIcon,
+  ListChecksIcon,
+  Loader2Icon,
   LockIcon,
   LockOpenIcon,
   Undo2Icon,
@@ -150,6 +154,7 @@ import {
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { Textarea } from "./ui/textarea";
 import { Separator } from "./ui/separator";
 import { Group, GroupSeparator } from "./ui/group";
 import {
@@ -3457,6 +3462,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           activeThreadTitle={activeThread.title}
           activeProjectName={activeProject?.name}
           isGitRepo={isGitRepo}
+          selectedProvider={selectedProvider}
           openInCwd={activeThread.worktreePath ?? activeProject?.cwd ?? null}
           activeProjectScripts={activeProject?.scripts}
           preferredScriptId={
@@ -4089,6 +4095,7 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   activeProjectName: string | undefined;
   isGitRepo: boolean;
+  selectedProvider: ProviderKind;
   openInCwd: string | null;
   activeProjectScripts: ProjectScript[] | undefined;
   preferredScriptId: string | null;
@@ -4108,7 +4115,7 @@ const ChatHeader = memo(function ChatHeader({
   activeThreadTitle,
   activeProjectName,
   isGitRepo,
-  openInCwd,
+  selectedProvider,
   activeProjectScripts,
   preferredScriptId,
   keybindings,
@@ -4160,7 +4167,7 @@ const ChatHeader = memo(function ChatHeader({
             activeThreadId={activeThreadId}
           />
         )}
-        {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} />}
+        {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} activeProvider={selectedProvider} />}
         <Tooltip>
           <TooltipTrigger
             render={
@@ -4233,6 +4240,130 @@ const ProviderHealthBanner = memo(function ProviderHealthBanner({
   );
 });
 
+// Dedicated card for ExitPlanMode plan approval — shows the full plan with
+// expand/collapse, a textarea for multi-line feedback, and clear action buttons.
+const PlanApprovalCard = memo(function PlanApprovalCard({
+  approval,
+  isResponding,
+  onRespondToApproval,
+}: {
+  approval: PendingApproval;
+  isResponding: boolean;
+  onRespondToApproval: (
+    requestId: ApprovalRequestId,
+    decision: ProviderApprovalDecision,
+    detail?: string,
+  ) => Promise<void>;
+}) {
+  const [feedback, setFeedback] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const planMarkdown = approval.detail ?? "";
+  const lineCount = planMarkdown.split("\n").length;
+  const canCollapse = planMarkdown.length > 600 || lineCount > 15;
+
+  const handleRequestChanges = () => {
+    if (!feedback.trim()) return;
+    void onRespondToApproval(approval.requestId, "decline", feedback.trim());
+  };
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 sm:p-5 shadow-xs">
+      {/* Header */}
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <Badge variant="secondary">Plan ready</Badge>
+        <span className="text-xs text-muted-foreground">
+          Review and approve, request changes, or decline
+        </span>
+      </div>
+
+      {/* Plan content */}
+      {planMarkdown ? (
+        <>
+          <div
+            className={cn(
+              "relative rounded-lg border border-border/60 bg-muted/20 px-4 py-3 mb-1",
+              canCollapse && !expanded && "max-h-72 overflow-hidden",
+            )}
+          >
+            <ChatMarkdown text={planMarkdown} cwd={undefined} isStreaming={false} />
+            {canCollapse && !expanded && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-muted/20 to-transparent" />
+            )}
+          </div>
+          {canCollapse && (
+            <div className="flex justify-center mb-3">
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => setExpanded((v) => !v)}
+              >
+                {expanded ? "Show less" : "Show full plan"}
+              </Button>
+            </div>
+          )}
+        </>
+      ) : null}
+
+      {/* Feedback textarea */}
+      <div className="mb-4">
+        <label className="block mb-1.5 text-xs font-medium text-muted-foreground">
+          Suggest changes{" "}
+          <span className="font-normal opacity-60">(optional — press ⌘↵ to send)</span>
+        </label>
+        <Textarea
+          size="sm"
+          placeholder="Describe what you'd like changed about this plan…"
+          value={feedback}
+          disabled={isResponding}
+          onChange={(e) => setFeedback(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && feedback.trim()) {
+              handleRequestChanges();
+            }
+          }}
+        />
+      </div>
+
+      {/* Action buttons */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant="default"
+          disabled={isResponding}
+          onClick={() => void onRespondToApproval(approval.requestId, "accept")}
+        >
+          Approve plan
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={isResponding || !feedback.trim()}
+          onClick={handleRequestChanges}
+          title={!feedback.trim() ? "Type feedback above to request changes" : undefined}
+        >
+          Request changes
+        </Button>
+        <Button
+          size="sm"
+          variant="destructive-outline"
+          disabled={isResponding}
+          onClick={() => void onRespondToApproval(approval.requestId, "decline")}
+        >
+          Decline
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={isResponding}
+          onClick={() => void onRespondToApproval(approval.requestId, "cancel")}
+        >
+          Cancel turn
+        </Button>
+      </div>
+    </div>
+  );
+});
+
 interface PendingApprovalsPanelProps {
   pendingApprovals: PendingApproval[];
   respondingRequestIds: ApprovalRequestId[];
@@ -4248,81 +4379,42 @@ const PendingApprovalsPanel = memo(function PendingApprovalsPanel({
   respondingRequestIds,
   onRespondToApproval,
 }: PendingApprovalsPanelProps) {
-  const [planFeedback, setPlanFeedback] = useState<Record<string, string>>({});
-
   if (pendingApprovals.length === 0) return null;
   return (
     <div className="pt-3 mx-auto max-w-3xl space-y-2">
       {pendingApprovals.map((approval) => {
         const isResponding = respondingRequestIds.includes(approval.requestId);
         const isPlan = approval.requestKind === "plan";
-        const feedback = planFeedback[approval.requestId] ?? "";
 
+        // Plan approvals (ExitPlanMode) get a dedicated full-featured card
+        if (isPlan) {
+          return (
+            <PlanApprovalCard
+              key={approval.requestId}
+              approval={approval}
+              isResponding={isResponding}
+              onRespondToApproval={onRespondToApproval}
+            />
+          );
+        }
+
+        // All other approval types (command, file-read, file-change)
         return (
-          <Alert variant={isPlan ? "default" : "warning"} key={approval.requestId}>
+          <Alert variant="warning" key={approval.requestId}>
             <InfoIcon />
             <AlertTitle className="text-xs">
-              {isPlan
-                ? "Plan approval requested"
-                : approval.requestKind === "command"
-                  ? "Command approval requested"
-                  : approval.requestKind === "file-read"
-                    ? "File-read approval requested"
-                    : "File-change approval requested"}
+              {approval.requestKind === "command"
+                ? "Command approval requested"
+                : approval.requestKind === "file-read"
+                  ? "File-read approval requested"
+                  : "File-change approval requested"}
             </AlertTitle>
             <AlertDescription
-              className={
-                isPlan
-                  ? "block text-xs max-h-80 overflow-y-auto"
-                  : "truncate block font-mono text-[11px]"
-              }
-              title={isPlan ? undefined : approval.detail}
+              className="truncate block font-mono text-[11px]"
+              title={approval.detail}
             >
-              {isPlan && approval.detail ? (
-                <ChatMarkdown text={approval.detail} cwd={undefined} />
-              ) : (
-                approval.detail
-              )}
+              {approval.detail}
             </AlertDescription>
-            {isPlan && (
-              <div className="col-start-2! -col-end-1! mt-1.5 flex items-center gap-2">
-                <Input
-                  className="h-7 text-xs flex-1"
-                  placeholder="Suggest changes to the plan..."
-                  value={feedback}
-                  disabled={isResponding}
-                  onChange={(e) =>
-                    setPlanFeedback((prev) => ({
-                      ...prev,
-                      [approval.requestId]: e.target.value,
-                    }))
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && feedback.trim()) {
-                      void onRespondToApproval(
-                        approval.requestId,
-                        "decline",
-                        feedback.trim(),
-                      );
-                    }
-                  }}
-                />
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={isResponding || !feedback.trim()}
-                  onClick={() =>
-                    void onRespondToApproval(
-                      approval.requestId,
-                      "decline",
-                      feedback.trim(),
-                    )
-                  }
-                >
-                  Revise
-                </Button>
-              </div>
-            )}
             <AlertAction className="col-start-2! -col-end-1! mt-1.5 sm:row-start-auto sm:row-end-auto">
               <Button
                 size="xs"
@@ -4330,18 +4422,16 @@ const PendingApprovalsPanel = memo(function PendingApprovalsPanel({
                 disabled={isResponding}
                 onClick={() => void onRespondToApproval(approval.requestId, "accept")}
               >
-                {isPlan ? "Approve plan" : "Approve once"}
+                Approve once
               </Button>
-              {!isPlan && (
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={isResponding}
-                  onClick={() => void onRespondToApproval(approval.requestId, "acceptForSession")}
-                >
-                  Always allow this session
-                </Button>
-              )}
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={isResponding}
+                onClick={() => void onRespondToApproval(approval.requestId, "acceptForSession")}
+              >
+                Always allow this session
+              </Button>
               <Button
                 size="xs"
                 variant="destructive-outline"
@@ -4373,40 +4463,63 @@ interface PlanModePanelProps {
 const PlanModePanel = memo(function PlanModePanel({ activePlan }: PlanModePanelProps) {
   if (!activePlan) return null;
 
+  const totalSteps = activePlan.steps.length;
+  const completedSteps = activePlan.steps.filter((s) => s.status === "completed").length;
+
   return (
     <div className="pt-3 mx-auto max-w-3xl">
       <div className="rounded-xl border border-border/70 bg-muted/30 p-4">
-        <div className="flex items-center gap-2">
-          <Badge variant="secondary">Plan</Badge>
-          <span className="text-xs text-muted-foreground">
-            Updated {formatTimestamp(activePlan.createdAt)}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <ListChecksIcon className="size-3.5 text-muted-foreground/70" aria-hidden />
+            <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">
+              Tasks
+            </span>
+          </div>
+          <span className="text-[11px] tabular-nums text-muted-foreground/60">
+            {completedSteps}/{totalSteps} done
           </span>
         </div>
         {activePlan.explanation ? (
-          <p className="mt-2 text-sm text-muted-foreground">{activePlan.explanation}</p>
+          <p className="mt-2 text-xs text-muted-foreground">{activePlan.explanation}</p>
         ) : null}
-        <div className="mt-3 space-y-2">
-          {activePlan.steps.map((step) => (
+        <div className="mt-3 space-y-1.5">
+          {activePlan.steps.map((step, index) => (
             <div
-              key={`${step.status}:${step.step}`}
-              className="flex items-start gap-3 rounded-lg border border-border/60 bg-background/80 px-3 py-2"
-            >
-              <Badge
-                variant={
-                  step.status === "completed"
-                    ? "default"
-                    : step.status === "inProgress"
-                      ? "secondary"
-                      : "outline"
-                }
-              >
-                {step.status === "inProgress"
-                  ? "In progress"
+              key={`${index}:${step.step}`}
+              className={cn(
+                "flex items-start gap-2.5 rounded-lg px-3 py-2 transition-opacity",
+                step.status === "inProgress"
+                  ? "border border-border/80 bg-background/80"
                   : step.status === "completed"
-                    ? "Done"
-                    : "Pending"}
-              </Badge>
-              <div className="min-w-0 flex-1 text-sm">{step.step}</div>
+                    ? "opacity-45"
+                    : "opacity-65",
+              )}
+            >
+              {step.status === "completed" ? (
+                <CheckCircle2Icon
+                  className="mt-0.5 size-3.5 shrink-0 text-green-500/80"
+                  aria-hidden
+                />
+              ) : step.status === "inProgress" ? (
+                <Loader2Icon
+                  className="mt-0.5 size-3.5 shrink-0 animate-spin text-foreground/70"
+                  aria-hidden
+                />
+              ) : (
+                <CircleIcon
+                  className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/30"
+                  aria-hidden
+                />
+              )}
+              <span
+                className={cn(
+                  "min-w-0 flex-1 text-xs leading-relaxed",
+                  step.status === "completed" && "line-through",
+                )}
+              >
+                {step.step}
+              </span>
             </div>
           ))}
         </div>
