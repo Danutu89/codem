@@ -1923,6 +1923,23 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
               });
 
               if (decision === "accept" || decision === "acceptForSession") {
+                // When ExitPlanMode is approved, switch out of plan mode so
+                // the model can proceed with implementation tools in the same
+                // turn rather than telling the user to "exit plan mode".
+                if (toolName === "ExitPlanMode" && context.activePermissionMode === "plan") {
+                  const restoredMode = context.permissionMode ?? "default";
+                  context.activePermissionMode = restoredMode;
+                  yield* Effect.tryPromise({
+                    try: () => context.query.setPermissionMode(restoredMode),
+                    catch: (cause) =>
+                      toRequestError(
+                        context.session.threadId,
+                        "turn/setPermissionMode/exitPlan",
+                        cause,
+                      ),
+                  });
+                }
+
                 return {
                   behavior: "allow",
                   updatedInput: toolInput,

@@ -2883,6 +2883,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
       const api = readNativeApi();
       if (!api || !activeThreadId) return;
 
+      // When a plan approval is accepted, switch out of plan mode so the
+      // model can proceed with implementation in the same turn.
+      if (
+        (decision === "accept" || decision === "acceptForSession") &&
+        pendingApprovals.some(
+          (a) => a.requestId === requestId && a.requestKind === "plan",
+        )
+      ) {
+        handleInteractionModeChange("default");
+      }
+
       setRespondingRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
@@ -2904,7 +2915,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         });
       setRespondingRequestIds((existing) => existing.filter((id) => id !== requestId));
     },
-    [activeThreadId, setStoreThreadError],
+    [activeThreadId, handleInteractionModeChange, pendingApprovals, setStoreThreadError],
   );
 
   const onRespondToUserInput = useCallback(
@@ -5474,6 +5485,14 @@ const MessagesTimeline = memo(function MessagesTimeline({
               <div className="space-y-1">
                 {visibleEntries.map((workEntry) => {
                   const toolDetail = formatToolDetail(workEntry);
+                  const strippedLabel = workEntry.toolName
+                    ? workEntry.label.replace(/^(Command run|File change|Tool call|MCP tool call|Item)\s*/i, "")
+                    : workEntry.label;
+                  // When we have a tool detail, the label is usually redundant (e.g. label="Finding **/*.json", detail="**/*.json").
+                  // Show the detail inline instead of repeating both.
+                  const showLabelText = !toolDetail;
+                  // For multi-line details (like Edit diffs), use a pre block; for single-line, show inline after badge.
+                  const isMultiLineDetail = toolDetail ? toolDetail.includes("\n") : false;
                   return (
                   <div key={`work-row:${workEntry.id}`} className="flex items-start gap-2 py-0.5">
                     <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/30" />
@@ -5484,9 +5503,12 @@ const MessagesTimeline = memo(function MessagesTimeline({
                             {workEntry.toolName}
                           </span>
                         )}
-                        {workEntry.toolName ? workEntry.label.replace(/^(Command run|File change|Tool call|MCP tool call|Item)\s*/i, "") : workEntry.label}
+                        {showLabelText && strippedLabel}
+                        {toolDetail && !isMultiLineDetail && (
+                          <span className="font-mono text-foreground/75">{toolDetail}</span>
+                        )}
                       </p>
-                      {toolDetail && (
+                      {toolDetail && isMultiLineDetail && (
                         <pre className="mt-1 overflow-x-auto rounded-md border border-border/70 bg-background/80 px-2 py-1 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
                           {toolDetail}
                         </pre>
