@@ -28,6 +28,8 @@ export interface WorkLogEntry {
   label: string;
   detail?: string;
   command?: string;
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
   changedFiles?: ReadonlyArray<string>;
   tone: "thinking" | "tool" | "info" | "error";
 }
@@ -37,6 +39,8 @@ export interface PendingApproval {
   requestKind: "command" | "file-read" | "file-change" | "plan";
   createdAt: string;
   detail?: string;
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
 }
 
 export interface PendingUserInput {
@@ -183,6 +187,15 @@ export function derivePendingApprovals(
           ? requestKindFromRequestType(payload.requestType)
           : null;
     const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
+    const args =
+      payload && typeof payload.args === "object" && payload.args !== null
+        ? (payload.args as Record<string, unknown>)
+        : null;
+    const toolName = args && typeof args.toolName === "string" ? args.toolName : undefined;
+    const toolInput =
+      args && typeof args.input === "object" && args.input !== null
+        ? (args.input as Record<string, unknown>)
+        : undefined;
 
     if (activity.kind === "approval.requested" && requestId && requestKind) {
       openByRequestId.set(requestId, {
@@ -190,6 +203,8 @@ export function derivePendingApprovals(
         requestKind,
         createdAt: activity.createdAt,
         ...(detail ? { detail } : {}),
+        ...(toolName ? { toolName } : {}),
+        ...(toolInput ? { toolInput } : {}),
       });
       continue;
     }
@@ -410,9 +425,42 @@ export function deriveWorkLogEntries(
   latestTurnId: TurnId | undefined,
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
+
+  // Build a set of tool names that have a tool.updated entry (which carries
+  // the full input from the assistant message). When a tool.updated exists,
+  // the corresponding tool.completed (which has empty {} input from
+  // content_block_stop) is redundant and should be skipped.
+  const toolUpdatedSummaries = new Set<string>();
+  for (const activity of ordered) {
+    if (activity.kind === "tool.updated" && activity.tone === "tool") {
+      // Use summary prefix as a rough dedup key (e.g. "Command run", "File change")
+      toolUpdatedSummaries.add(activity.summary);
+    }
+  }
+
   return ordered
     .filter((activity) => (latestTurnId ? activity.turnId === latestTurnId : true))
     .filter((activity) => activity.kind !== "tool.started")
+    .filter((activity) => {
+      // Skip tool.completed entries when a tool.updated entry exists for the
+      // same tool type — the updated entry has the real data.
+      if (activity.kind === "tool.completed" && activity.tone === "tool") {
+        const payload = activity.payload && typeof activity.payload === "object"
+          ? (activity.payload as Record<string, unknown>)
+          : null;
+        const data = asRecord(payload?.data);
+        const input = data && typeof data.input === "object" && data.input !== null
+          ? (data.input as Record<string, unknown>)
+          : null;
+        const hasEmptyInput = !input || Object.keys(input).length === 0;
+        // If the completed event has empty input and there are updated events,
+        // skip it since the updated event will have the real data
+        if (hasEmptyInput && toolUpdatedSummaries.size > 0) {
+          return false;
+        }
+      }
+      return true;
+    })
     .filter((activity) => activity.kind !== "task.started" && activity.kind !== "task.completed")
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .map((activity) => {
@@ -422,12 +470,23 @@ export function deriveWorkLogEntries(
           : null;
       const command = extractToolCommand(payload);
       const changedFiles = extractChangedFiles(payload);
+      const data = asRecord(payload?.data);
+      const toolName = extractToolName(data, payload);
+      const toolInput = data && typeof data.input === "object" && data.input !== null
+        ? (data.input as Record<string, unknown>)
+        : undefined;
       const entry: WorkLogEntry = {
         id: activity.id,
         createdAt: activity.createdAt,
         label: activity.summary,
         tone: activity.tone === "approval" ? "info" : activity.tone,
       };
+      if (toolName) {
+        entry.toolName = toolName;
+      }
+      if (toolInput) {
+        entry.toolInput = toolInput;
+      }
       if (payload && typeof payload.detail === "string" && payload.detail.length > 0) {
         entry.detail = payload.detail;
       }
@@ -467,16 +526,43 @@ function normalizeCommandValue(value: unknown): string | null {
   return parts.length > 0 ? parts.join(" ") : null;
 }
 
+function extractToolName(
+  data: Record<string, unknown> | null,
+  payload: Record<string, unknown> | null,
+): string | null {
+  // Direct toolName from SDK data
+  if (data && typeof data.toolName === "string" && data.toolName.length > 0) {
+    return data.toolName;
+  }
+  // Nested in item
+  const item = asRecord(data?.item);
+  if (item && typeof item.toolName === "string" && item.toolName.length > 0) {
+    return item.toolName;
+  }
+  // Try to extract from detail string (e.g. "Bash: ls -la" → "Bash")
+  if (payload && typeof payload.detail === "string") {
+    const colonIndex = payload.detail.indexOf(": ");
+    if (colonIndex > 0 && colonIndex < 30) {
+      return payload.detail.slice(0, colonIndex);
+    }
+  }
+  return null;
+}
+
 function extractToolCommand(payload: Record<string, unknown> | null): string | null {
   const data = asRecord(payload?.data);
   const item = asRecord(data?.item);
   const itemResult = asRecord(item?.result);
   const itemInput = asRecord(item?.input);
+  // Also check direct data.input (SDK shape: data = { toolName, input: { command } })
+  const dataInput = asRecord(data?.input);
   const candidates = [
     normalizeCommandValue(item?.command),
     normalizeCommandValue(itemInput?.command),
     normalizeCommandValue(itemResult?.command),
     normalizeCommandValue(data?.command),
+    normalizeCommandValue(dataInput?.command),
+    normalizeCommandValue(dataInput?.cmd),
   ];
   return candidates.find((candidate) => candidate !== null) ?? null;
 }
@@ -516,6 +602,7 @@ function collectChangedFiles(
 
   pushChangedFile(target, seen, record.path);
   pushChangedFile(target, seen, record.filePath);
+  pushChangedFile(target, seen, record.file_path);
   pushChangedFile(target, seen, record.relativePath);
   pushChangedFile(target, seen, record.filename);
   pushChangedFile(target, seen, record.newPath);

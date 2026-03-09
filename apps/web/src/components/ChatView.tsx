@@ -93,6 +93,7 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
 import { useStore } from "../store";
+import { useFileBrowserStore } from "../fileBrowserStore";
 import {
   buildPlanImplementationThreadTitle,
   buildPlanImplementationPrompt,
@@ -125,6 +126,12 @@ import {
   resolveShortcutCommand,
   shortcutLabelForCommand,
 } from "../keybindings";
+import {
+  CommandApprovalCard,
+  FileChangeApprovalCard,
+  FileReadApprovalCard,
+  GenericApprovalCard,
+} from "./ApprovalCards";
 import BrowserTestPanel from "./BrowserTestPanel";
 import ChatMarkdown from "./ChatMarkdown";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
@@ -139,6 +146,7 @@ import {
   CircleIcon,
   FileIcon,
   FolderIcon,
+  FolderOpenIcon,
   DiffIcon,
   EllipsisIcon,
   FolderClosedIcon,
@@ -292,6 +300,139 @@ function workToneClass(tone: "thinking" | "tool" | "info" | "error"): string {
   if (tone === "tool") return "text-muted-foreground/70";
   if (tone === "thinking") return "text-muted-foreground/50";
   return "text-muted-foreground/40";
+}
+
+/** Produce a human-friendly summary of a tool call's parameters. */
+function formatToolDetail(entry: {
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  command?: string;
+  detail?: string;
+}): string | null {
+  const { toolName, toolInput } = entry;
+  if (!toolName || !toolInput) return null;
+
+  const name = toolName.toLowerCase();
+
+  // Bash / shell commands – show the command
+  if (name === "bash" || name.includes("bash") || name.includes("shell") || name.includes("terminal")) {
+    const cmd = typeof toolInput.command === "string" ? toolInput.command.trim() : null;
+    if (cmd) return cmd;
+  }
+
+  // Edit tool – show file path + old/new strings summary
+  if (name === "edit") {
+    const filePath = typeof toolInput.file_path === "string" ? toolInput.file_path : null;
+    const oldStr = typeof toolInput.old_string === "string" ? toolInput.old_string : null;
+    const newStr = typeof toolInput.new_string === "string" ? toolInput.new_string : null;
+    if (filePath) {
+      const parts = [filePath];
+      if (oldStr !== null && newStr !== null) {
+        const oldPreview = oldStr.length > 80 ? `${oldStr.slice(0, 77)}...` : oldStr;
+        const newPreview = newStr.length > 80 ? `${newStr.slice(0, 77)}...` : newStr;
+        parts.push(`- ${oldPreview}`);
+        parts.push(`+ ${newPreview}`);
+      }
+      return parts.join("\n");
+    }
+  }
+
+  // Write tool – show file path
+  if (name === "write") {
+    const filePath = typeof toolInput.file_path === "string" ? toolInput.file_path : null;
+    const contentLen = typeof toolInput.content === "string" ? toolInput.content.length : 0;
+    if (filePath) {
+      return contentLen > 0 ? `${filePath} (${contentLen} chars)` : filePath;
+    }
+  }
+
+  // Read tool – show file path
+  if (name === "read") {
+    const filePath = typeof toolInput.file_path === "string" ? toolInput.file_path : null;
+    if (filePath) return filePath;
+  }
+
+  // Glob tool
+  if (name === "glob") {
+    const pattern = typeof toolInput.pattern === "string" ? toolInput.pattern : null;
+    const path = typeof toolInput.path === "string" ? toolInput.path : null;
+    if (pattern) return path ? `${pattern} in ${path}` : pattern;
+  }
+
+  // Grep tool
+  if (name === "grep") {
+    const pattern = typeof toolInput.pattern === "string" ? toolInput.pattern : null;
+    const path = typeof toolInput.path === "string" ? toolInput.path : null;
+    if (pattern) return path ? `/${pattern}/ in ${path}` : `/${pattern}/`;
+  }
+
+  // Agent tool
+  if (name === "agent") {
+    const desc = typeof toolInput.description === "string" ? toolInput.description : null;
+    const prompt = typeof toolInput.prompt === "string" ? toolInput.prompt : null;
+    if (desc) return desc;
+    if (prompt) return prompt.length > 200 ? `${prompt.slice(0, 197)}...` : prompt;
+  }
+
+  // WebSearch / WebFetch
+  if (name === "websearch" || name === "web_search") {
+    const query = typeof toolInput.query === "string" ? toolInput.query : null;
+    if (query) return query;
+  }
+  if (name === "webfetch" || name === "web_fetch") {
+    const url = typeof toolInput.url === "string" ? toolInput.url : null;
+    if (url) return url;
+  }
+
+  // TodoWrite
+  if (name === "todowrite" || name === "todo_write") {
+    const todos = Array.isArray(toolInput.todos) ? toolInput.todos : null;
+    if (todos) return `${todos.length} todo item(s)`;
+  }
+
+  // NotebookEdit
+  if (name === "notebookedit" || name === "notebook_edit") {
+    const notebook = typeof toolInput.notebook === "string" ? toolInput.notebook : null;
+    if (notebook) return notebook;
+  }
+
+  // Generic fallback: show key-value pairs for small inputs
+  const keys = Object.keys(toolInput).filter((k) => toolInput[k] !== undefined && toolInput[k] !== null);
+  if (keys.length === 0) return null;
+
+  // For small inputs, show a compact JSON-like representation
+  const serialized = JSON.stringify(toolInput);
+  if (serialized.length <= 300) {
+    return formatCompactToolInput(toolInput, keys);
+  }
+
+  // For larger inputs, show just the key names and value types
+  return keys.map((k) => {
+    const v = toolInput[k];
+    if (typeof v === "string") {
+      return v.length > 60 ? `${k}: ${v.slice(0, 57)}...` : `${k}: ${v}`;
+    }
+    if (typeof v === "number" || typeof v === "boolean") {
+      return `${k}: ${String(v)}`;
+    }
+    return `${k}: [${typeof v}]`;
+  }).join("\n");
+}
+
+function formatCompactToolInput(input: Record<string, unknown>, keys: string[]): string {
+  return keys.map((k) => {
+    const v = input[k];
+    if (typeof v === "string") {
+      return v.length > 120 ? `${k}: ${v.slice(0, 117)}...` : `${k}: ${v}`;
+    }
+    if (typeof v === "number" || typeof v === "boolean") {
+      return `${k}: ${String(v)}`;
+    }
+    if (Array.isArray(v)) {
+      return `${k}: [${v.length} items]`;
+    }
+    return `${k}: ${JSON.stringify(v)}`;
+  }).join("\n");
 }
 
 function normalizePlanMarkdownForExport(planMarkdown: string): string {
@@ -1336,6 +1477,15 @@ export default function ChatView({ threadId }: ChatViewProps) {
     () => shortcutLabelForCommand(keybindings, "diff.toggle"),
     [keybindings],
   );
+  const fileBrowserShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "fileBrowser.toggle"),
+    [keybindings],
+  );
+  const fileBrowserOpen = useFileBrowserStore((s) => s.isOpen);
+  const fileBrowserToggle = useFileBrowserStore((s) => s.toggle);
+  const onToggleFileBrowser = useCallback(() => {
+    fileBrowserToggle();
+  }, [fileBrowserToggle]);
   const onToggleDiff = useCallback(() => {
     void navigate({
       to: "/$threadId",
@@ -2255,6 +2405,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
         return;
       }
 
+      if (command === "fileBrowser.toggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        onToggleFileBrowser();
+        return;
+      }
+
       const scriptId = projectScriptIdFromCommand(command);
       if (!scriptId || !activeProject) return;
       const script = activeProject.scripts.find((entry) => entry.id === scriptId);
@@ -2277,6 +2434,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     splitTerminal,
     keybindings,
     onToggleDiff,
+    onToggleFileBrowser,
     toggleTerminalVisibility,
   ]);
 
@@ -3471,14 +3629,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
           keybindings={keybindings}
           availableEditors={availableEditors}
           diffToggleShortcutLabel={diffPanelShortcutLabel}
+          fileBrowserToggleShortcutLabel={fileBrowserShortcutLabel}
           gitCwd={gitCwd}
           diffOpen={diffOpen}
+          fileBrowserOpen={fileBrowserOpen}
           onRunProjectScript={(script) => {
             void runProjectScript(script);
           }}
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
           onToggleDiff={onToggleDiff}
+          onToggleFileBrowser={onToggleFileBrowser}
         />
       </header>
 
@@ -4102,12 +4263,15 @@ interface ChatHeaderProps {
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   diffToggleShortcutLabel: string | null;
+  fileBrowserToggleShortcutLabel: string | null;
   gitCwd: string | null;
   diffOpen: boolean;
+  fileBrowserOpen: boolean;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onToggleDiff: () => void;
+  onToggleFileBrowser: () => void;
 }
 
 const ChatHeader = memo(function ChatHeader({
@@ -4121,12 +4285,15 @@ const ChatHeader = memo(function ChatHeader({
   keybindings,
   availableEditors,
   diffToggleShortcutLabel,
+  fileBrowserToggleShortcutLabel,
   gitCwd,
   diffOpen,
+  fileBrowserOpen,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
   onToggleDiff,
+  onToggleFileBrowser,
 }: ChatHeaderProps) {
   return (
     <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -4168,6 +4335,29 @@ const ChatHeader = memo(function ChatHeader({
           />
         )}
         {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} activeProvider={selectedProvider} />}
+        {activeProjectName && (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Toggle
+                  className="shrink-0"
+                  pressed={fileBrowserOpen}
+                  onPressedChange={onToggleFileBrowser}
+                  aria-label="Toggle file browser"
+                  variant="outline"
+                  size="xs"
+                >
+                  <FolderOpenIcon className="size-3" />
+                </Toggle>
+              }
+            />
+            <TooltipPopup side="bottom">
+              {fileBrowserToggleShortcutLabel
+                ? `Toggle file browser (${fileBrowserToggleShortcutLabel})`
+                : "Toggle file browser"}
+            </TooltipPopup>
+          </Tooltip>
+        )}
         <Tooltip>
           <TooltipTrigger
             render={
@@ -4398,58 +4588,48 @@ const PendingApprovalsPanel = memo(function PendingApprovalsPanel({
           );
         }
 
-        // All other approval types (command, file-read, file-change)
+        // Specialized approval cards per tool/request kind
+        if (approval.requestKind === "command") {
+          return (
+            <CommandApprovalCard
+              key={approval.requestId}
+              approval={approval}
+              isResponding={isResponding}
+              onRespondToApproval={onRespondToApproval}
+            />
+          );
+        }
+
+        if (approval.requestKind === "file-change") {
+          return (
+            <FileChangeApprovalCard
+              key={approval.requestId}
+              approval={approval}
+              isResponding={isResponding}
+              onRespondToApproval={onRespondToApproval}
+            />
+          );
+        }
+
+        if (approval.requestKind === "file-read") {
+          return (
+            <FileReadApprovalCard
+              key={approval.requestId}
+              approval={approval}
+              isResponding={isResponding}
+              onRespondToApproval={onRespondToApproval}
+            />
+          );
+        }
+
+        // Fallback for unknown kinds
         return (
-          <Alert variant="warning" key={approval.requestId}>
-            <InfoIcon />
-            <AlertTitle className="text-xs">
-              {approval.requestKind === "command"
-                ? "Command approval requested"
-                : approval.requestKind === "file-read"
-                  ? "File-read approval requested"
-                  : "File-change approval requested"}
-            </AlertTitle>
-            <AlertDescription
-              className="truncate block font-mono text-[11px]"
-              title={approval.detail}
-            >
-              {approval.detail}
-            </AlertDescription>
-            <AlertAction className="col-start-2! -col-end-1! mt-1.5 sm:row-start-auto sm:row-end-auto">
-              <Button
-                size="xs"
-                variant="default"
-                disabled={isResponding}
-                onClick={() => void onRespondToApproval(approval.requestId, "accept")}
-              >
-                Approve once
-              </Button>
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={isResponding}
-                onClick={() => void onRespondToApproval(approval.requestId, "acceptForSession")}
-              >
-                Always allow this session
-              </Button>
-              <Button
-                size="xs"
-                variant="destructive-outline"
-                disabled={isResponding}
-                onClick={() => void onRespondToApproval(approval.requestId, "decline")}
-              >
-                Decline
-              </Button>
-              <Button
-                size="xs"
-                variant="ghost"
-                disabled={isResponding}
-                onClick={() => void onRespondToApproval(approval.requestId, "cancel")}
-              >
-                Cancel turn
-              </Button>
-            </AlertAction>
-          </Alert>
+          <GenericApprovalCard
+            key={approval.requestId}
+            approval={approval}
+            isResponding={isResponding}
+            onRespondToApproval={onRespondToApproval}
+          />
         );
       })}
     </div>
@@ -5292,14 +5472,26 @@ const MessagesTimeline = memo(function MessagesTimeline({
                 )}
               </div>
               <div className="space-y-1">
-                {visibleEntries.map((workEntry) => (
+                {visibleEntries.map((workEntry) => {
+                  const toolDetail = formatToolDetail(workEntry);
+                  return (
                   <div key={`work-row:${workEntry.id}`} className="flex items-start gap-2 py-0.5">
                     <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/30" />
                     <div className="min-w-0 flex-1 py-[2px]">
                       <p className={`text-[11px] leading-relaxed ${workToneClass(workEntry.tone)}`}>
-                        {workEntry.label}
+                        {workEntry.toolName && (
+                          <span className="mr-1.5 inline-block rounded bg-muted-foreground/10 px-1.5 py-px font-mono text-[10px] font-medium text-foreground/70">
+                            {workEntry.toolName}
+                          </span>
+                        )}
+                        {workEntry.toolName ? workEntry.label.replace(/^(Command run|File change|Tool call|MCP tool call|Item)\s*/i, "") : workEntry.label}
                       </p>
-                      {workEntry.command && (
+                      {toolDetail && (
+                        <pre className="mt-1 overflow-x-auto rounded-md border border-border/70 bg-background/80 px-2 py-1 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
+                          {toolDetail}
+                        </pre>
+                      )}
+                      {!toolDetail && workEntry.command && (
                         <pre className="mt-1 overflow-x-auto rounded-md border border-border/70 bg-background/80 px-2 py-1 font-mono text-[11px] leading-relaxed text-foreground/80">
                           {workEntry.command}
                         </pre>
@@ -5322,7 +5514,7 @@ const MessagesTimeline = memo(function MessagesTimeline({
                           )}
                         </div>
                       )}
-                      {workEntry.detail &&
+                      {!toolDetail && workEntry.detail &&
                         (!workEntry.command || workEntry.detail !== workEntry.command) && (
                           <p
                             className="mt-1 text-[11px] leading-relaxed text-muted-foreground/75"
@@ -5333,7 +5525,8 @@ const MessagesTimeline = memo(function MessagesTimeline({
                         )}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           );

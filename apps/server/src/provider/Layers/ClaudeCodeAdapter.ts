@@ -104,6 +104,7 @@ interface ToolInFlight {
   readonly toolName: string;
   readonly title: string;
   readonly detail?: string;
+  readonly input: Record<string, unknown>;
 }
 
 interface ClaudeSessionContext {
@@ -279,7 +280,41 @@ function summarizeToolRequest(toolName: string, input: Record<string, unknown>):
     return `${toolName}: ${command.trim().slice(0, 400)}`;
   }
 
+  // Try common parameter names for a human-readable summary
+  const filePath = typeof input.file_path === "string" ? input.file_path : undefined;
+  if (filePath) {
+    return `${toolName}: ${filePath}`;
+  }
+  const pattern = typeof input.pattern === "string" ? input.pattern : undefined;
+  const path = typeof input.path === "string" ? input.path : undefined;
+  if (pattern) {
+    return path ? `${toolName}: /${pattern}/ in ${path}` : `${toolName}: /${pattern}/`;
+  }
+  if (path) {
+    return `${toolName}: ${path}`;
+  }
+  const query = typeof input.query === "string" ? input.query : undefined;
+  if (query) {
+    return `${toolName}: ${query}`;
+  }
+  const url = typeof input.url === "string" ? input.url : undefined;
+  if (url) {
+    return `${toolName}: ${url}`;
+  }
+  const description = typeof input.description === "string" ? input.description : undefined;
+  if (description) {
+    return `${toolName}: ${description.slice(0, 400)}`;
+  }
+  const prompt = typeof input.prompt === "string" ? input.prompt : undefined;
+  if (prompt) {
+    return `${toolName}: ${prompt.slice(0, 200)}`;
+  }
+
   const serialized = JSON.stringify(input);
+  // Don't show empty objects — just return the tool name
+  if (serialized === "{}" || serialized === "[]" || Object.keys(input).length === 0) {
+    return toolName;
+  }
   if (serialized.length <= 400) {
     return `${toolName}: ${serialized}`;
   }
@@ -301,8 +336,29 @@ function titleForTool(itemType: CanonicalItemType): string {
   }
 }
 
+const PLAN_MODE_PREAMBLE = [
+  "⚠️ PLAN MODE IS ACTIVE — You MUST follow these rules strictly:",
+  "",
+  "1. DO NOT execute any implementation tools (Edit, Write, Bash, etc.) — they will all be denied.",
+  "2. Analyze the request and produce a detailed, step-by-step plan in markdown.",
+  "3. When your plan is ready, call the `ExitPlanMode` tool to propose it for review.",
+  "4. DO NOT write the plan as a free-text response — you MUST submit it through `ExitPlanMode`.",
+  "5. The user will review your plan and can approve, deny, or request changes before any implementation begins.",
+  "6. Do NOT attempt any implementation. Your ONLY job is to plan.",
+  "",
+  "---",
+  "",
+].join("\n");
+
 function buildUserMessage(input: ProviderSendTurnInput): SDKUserMessage {
   const fragments: string[] = [];
+
+  // When in plan mode, prepend explicit instructions so the model knows
+  // upfront that it must produce a plan via ExitPlanMode rather than
+  // attempting to use implementation tools (which would be denied).
+  if (input.interactionMode === "plan") {
+    fragments.push(PLAN_MODE_PREAMBLE);
+  }
 
   if (input.input && input.input.trim().length > 0) {
     fragments.push(input.input.trim());
@@ -877,6 +933,7 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
             toolName,
             title: titleForTool(itemType),
             detail,
+            input: toolInput,
           };
           context.inFlightTools.set(index, tool);
 
@@ -935,6 +992,10 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
               status: "completed",
               title: tool.title,
               ...(tool.detail ? { detail: tool.detail } : {}),
+              data: {
+                toolName: tool.toolName,
+                input: tool.input,
+              },
             },
             providerRefs: {
               ...providerThreadRef(context),
@@ -1000,24 +1061,88 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
           });
         }
 
-        // Detect TodoWrite tool calls and emit turn.plan.updated
+        // Iterate through tool_use blocks in the assistant message to:
+        // 1. Emit item.updated with the full (non-empty) input for each tool
+        //    (content_block_start only has empty {} input; the real input arrives here)
+        // 2. Detect TodoWrite for plan updates
         if (context.turnState) {
           const msgContent = (message.message as { content?: unknown })?.content;
           if (Array.isArray(msgContent)) {
             for (const block of msgContent) {
               if (
-                block &&
-                typeof block === "object" &&
-                "type" in block &&
-                (block.type === "tool_use" || block.type === "server_tool_use") &&
-                "name" in block &&
-                block.name === "TodoWrite" &&
-                "input" in block &&
-                block.input &&
-                typeof block.input === "object" &&
-                Array.isArray((block.input as Record<string, unknown>).todos)
+                !block ||
+                typeof block !== "object" ||
+                !("type" in block) ||
+                !("name" in block)
               ) {
-                const todos = (block.input as { todos: Array<Record<string, unknown>> }).todos;
+                continue;
+              }
+              const blockType = (block as { type: string }).type;
+              const isToolBlock =
+                blockType === "tool_use" ||
+                blockType === "server_tool_use" ||
+                blockType === "mcp_tool_use";
+              if (!isToolBlock) {
+                continue;
+              }
+
+              const toolBlock = block as {
+                type: string;
+                id?: string;
+                name: string;
+                input?: unknown;
+              };
+              const toolName = toolBlock.name;
+              const toolInput =
+                toolBlock.input && typeof toolBlock.input === "object"
+                  ? (toolBlock.input as Record<string, unknown>)
+                  : {};
+              const hasNonEmptyInput = Object.keys(toolInput).length > 0;
+
+              // Emit item.updated with the full input for each tool_use block
+              // so the UI can display the actual parameters instead of "{}"
+              if (hasNonEmptyInput && toolBlock.id) {
+                const itemType = classifyToolItemType(toolName);
+                const detail = summarizeToolRequest(toolName, toolInput);
+                const toolUpdateStamp = yield* makeEventStamp();
+                yield* offerRuntimeEvent({
+                  type: "item.updated",
+                  eventId: toolUpdateStamp.eventId,
+                  provider: PROVIDER,
+                  createdAt: toolUpdateStamp.createdAt,
+                  threadId: context.session.threadId,
+                  turnId: context.turnState.turnId,
+                  itemId: asRuntimeItemId(toolBlock.id),
+                  payload: {
+                    itemType,
+                    status: "completed",
+                    title: titleForTool(itemType),
+                    detail,
+                    data: {
+                      toolName,
+                      input: toolInput,
+                    },
+                  },
+                  providerRefs: {
+                    ...providerThreadRef(context),
+                    providerTurnId: String(context.turnState.turnId),
+                    providerItemId: ProviderItemId.makeUnsafe(toolBlock.id),
+                  },
+                  raw: {
+                    source: "claude.sdk.message",
+                    method: "claude/assistant/tool_use_updated",
+                    payload: toolBlock,
+                  },
+                });
+              }
+
+              // Detect TodoWrite for plan updates
+              if (
+                (blockType === "tool_use" || blockType === "server_tool_use") &&
+                toolName === "TodoWrite" &&
+                Array.isArray(toolInput.todos)
+              ) {
+                const todos = toolInput.todos as Array<Record<string, unknown>>;
                 const planSteps = todos
                   .filter((todo) => typeof todo.content === "string")
                   .map((todo) => ({
@@ -1686,7 +1811,10 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
                 return {
                   behavior: "deny",
                   message:
-                    "You are in plan mode. You must not execute tools. Create a plan and use ExitPlanMode to propose it.",
+                    `DENIED — Plan mode is active. You cannot use "${toolName}" or any other implementation tool right now. ` +
+                    "You must ONLY produce a plan and call the ExitPlanMode tool to propose it. " +
+                    "The user will review and approve the plan before any implementation can begin. " +
+                    "Do NOT attempt to use any other tool.",
                 } satisfies PermissionResult;
               }
 

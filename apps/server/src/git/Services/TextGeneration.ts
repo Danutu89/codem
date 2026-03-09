@@ -8,7 +8,7 @@
  */
 import { ServiceMap } from "effect";
 import type { Effect } from "effect";
-import type { ChatAttachment } from "@t3tools/contracts";
+import type { ChatAttachment, ProviderKind } from "@t3tools/contracts";
 
 import type { TextGenerationError } from "../Errors.ts";
 
@@ -19,6 +19,8 @@ export interface CommitMessageGenerationInput {
   stagedPatch: string;
   /** When true, the model also returns a semantic branch name for the change. */
   includeBranch?: boolean;
+  /** Explicit provider override. When set, DynamicTextGeneration dispatches based on this value instead of the ActiveTextGenProvider Ref. */
+  provider?: ProviderKind | undefined;
 }
 
 export interface CommitMessageGenerationResult {
@@ -35,6 +37,8 @@ export interface PrContentGenerationInput {
   commitSummary: string;
   diffSummary: string;
   diffPatch: string;
+  /** Explicit provider override. When set, DynamicTextGeneration dispatches based on this value instead of the ActiveTextGenProvider Ref. */
+  provider?: ProviderKind | undefined;
 }
 
 export interface PrContentGenerationResult {
@@ -46,6 +50,8 @@ export interface BranchNameGenerationInput {
   cwd: string;
   message: string;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  /** Explicit provider override. When set, DynamicTextGeneration dispatches based on this value instead of the ActiveTextGenProvider Ref. */
+  provider?: ProviderKind | undefined;
 }
 
 export interface BranchNameGenerationResult {

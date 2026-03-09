@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { Effect, FileSystem, Layer, Path } from "effect";
+import type { ProviderKind } from "@t3tools/contracts";
 import { resolveAutoFeatureBranchName, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 
 import { GitManagerError } from "../Errors.ts";
@@ -281,6 +282,8 @@ export const makeGitManager = Effect.gen(function* () {
     commitMessage?: string;
     /** When true, also produce a semantic feature branch name. */
     includeBranch?: boolean;
+    /** Explicit provider override forwarded to text generation. */
+    provider?: ProviderKind | undefined;
   }) =>
     Effect.gen(function* () {
       const context = yield* gitCore.prepareCommitContext(input.cwd);
@@ -307,6 +310,7 @@ export const makeGitManager = Effect.gen(function* () {
           stagedSummary: limitContext(context.stagedSummary, 8_000),
           stagedPatch: limitContext(context.stagedPatch, 50_000),
           ...(input.includeBranch ? { includeBranch: true } : {}),
+          ...(input.provider ? { provider: input.provider } : {}),
         })
         .pipe(Effect.map((result) => sanitizeCommitMessage(result)));
 
@@ -323,6 +327,7 @@ export const makeGitManager = Effect.gen(function* () {
     branch: string | null,
     commitMessage?: string,
     preResolvedSuggestion?: CommitAndBranchSuggestion,
+    provider?: ProviderKind | undefined,
   ) =>
     Effect.gen(function* () {
       const suggestion =
@@ -331,6 +336,7 @@ export const makeGitManager = Effect.gen(function* () {
           cwd,
           branch,
           ...(commitMessage ? { commitMessage } : {}),
+          ...(provider ? { provider } : {}),
         }));
       if (!suggestion) {
         return { status: "skipped_no_changes" as const };
@@ -344,7 +350,7 @@ export const makeGitManager = Effect.gen(function* () {
       };
     });
 
-  const runPrStep = (cwd: string, fallbackBranch: string | null) =>
+  const runPrStep = (cwd: string, fallbackBranch: string | null, provider?: ProviderKind | undefined) =>
     Effect.gen(function* () {
       const details = yield* gitCore.statusDetails(cwd);
       const branch = details.branch ?? fallbackBranch;
@@ -383,6 +389,7 @@ export const makeGitManager = Effect.gen(function* () {
         commitSummary: limitContext(rangeContext.commitSummary, 20_000),
         diffSummary: limitContext(rangeContext.diffSummary, 20_000),
         diffPatch: limitContext(rangeContext.diffPatch, 60_000),
+        ...(provider ? { provider } : {}),
       });
 
       const bodyFile = path.join(tempDir, `t3code-pr-body-${process.pid}-${randomUUID()}.md`);
@@ -445,13 +452,14 @@ export const makeGitManager = Effect.gen(function* () {
     };
   });
 
-  const runFeatureBranchStep = (cwd: string, branch: string | null, commitMessage?: string) =>
+  const runFeatureBranchStep = (cwd: string, branch: string | null, commitMessage?: string, provider?: ProviderKind | undefined) =>
     Effect.gen(function* () {
       const suggestion = yield* resolveCommitAndBranchSuggestion({
         cwd,
         branch,
         ...(commitMessage ? { commitMessage } : {}),
         includeBranch: true,
+        ...(provider ? { provider } : {}),
       });
       if (!suggestion) {
         return yield* gitManagerError(
@@ -499,6 +507,7 @@ export const makeGitManager = Effect.gen(function* () {
           input.cwd,
           initialStatus.branch,
           input.commitMessage,
+          input.provider,
         );
         branchStep = result.branchStep;
         commitMessageForStep = result.resolvedCommitMessage;
@@ -514,6 +523,7 @@ export const makeGitManager = Effect.gen(function* () {
         currentBranch,
         commitMessageForStep,
         preResolvedCommitSuggestion,
+        input.provider,
       );
 
       const push = wantsPush
@@ -521,7 +531,7 @@ export const makeGitManager = Effect.gen(function* () {
         : { status: "skipped_not_requested" as const };
 
       const pr = wantsPr
-        ? yield* runPrStep(input.cwd, currentBranch)
+        ? yield* runPrStep(input.cwd, currentBranch, input.provider)
         : { status: "skipped_not_requested" as const };
 
       return {

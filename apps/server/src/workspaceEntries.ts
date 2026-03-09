@@ -5,6 +5,8 @@ import { runProcess } from "./processRunner";
 
 import {
   ProjectEntry,
+  ProjectListEntriesInput,
+  ProjectListEntriesResult,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
 } from "@t3tools/contracts";
@@ -427,5 +429,15 @@ export async function searchWorkspaceEntries(
   return {
     entries: ranked.slice(0, input.limit),
     truncated: index.truncated || ranked.length > input.limit,
+  };
+}
+
+export async function listWorkspaceEntries(
+  input: ProjectListEntriesInput,
+): Promise<ProjectListEntriesResult> {
+  const index = await getWorkspaceIndex(input.cwd);
+  return {
+    entries: index.entries,
+    truncated: index.truncated,
   };
 }
