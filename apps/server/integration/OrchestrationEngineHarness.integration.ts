@@ -60,6 +60,7 @@ import {
 } from "./TestProviderAdapter.integration.ts";
 import { ServerConfig } from "../src/config.ts";
 import { AnalyticsService } from "../src/telemetry/Services/AnalyticsService.ts";
+import { UsageTrackerLive } from "../src/usageTracker.ts";
 
 function runGit(cwd: string, args: ReadonlyArray<string>) {
   return execFileSync("git", args, {
@@ -269,6 +270,7 @@ export const makeOrchestrationIntegrationHarness = (
     );
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),
+      Layer.provideMerge(UsageTrackerLive),
     );
     const gitCoreLayer = Layer.succeed(GitCore, {
       renameBranch: (input: Parameters<GitCoreShape["renameBranch"]>[0]) =>

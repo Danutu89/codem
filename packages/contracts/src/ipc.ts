@@ -50,6 +50,7 @@ import type {
   BrowserTestResult,
   BrowserTestProgress,
 } from "./browserTest";
+import type { ProviderUsageSnapshot } from "./usage";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -163,5 +164,8 @@ export interface NativeApi {
     run: (input: BrowserTestRunInput) => Promise<BrowserTestResult>;
     stop: () => Promise<void>;
     onProgress: (callback: (progress: BrowserTestProgress) => void) => () => void;
+  };
+  usage: {
+    onUsageUpdated: (callback: (snapshot: ProviderUsageSnapshot) => void) => () => void;
   };
 }

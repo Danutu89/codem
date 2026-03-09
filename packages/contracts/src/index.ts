@@ -12,3 +12,4 @@ export * from "./orchestration";
 export * from "./editor";
 export * from "./project";
 export * from "./browserTest";
+export * from "./usage";

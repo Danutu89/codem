@@ -60,6 +60,8 @@ import {
 } from "./ui/sidebar";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { isNonEmpty as isNonEmptyString } from "effect/String";
+import { UsageInfoPanel } from "./UsageInfo";
+import { useUsageInfo, resetCountdown, utilizationBarColor } from "../hooks/useUsageInfo";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const THREAD_PREVIEW_LIMIT = 6;
@@ -254,6 +256,88 @@ function ProjectFavicon({ cwd }: { cwd: string }) {
       onLoad={() => setStatus("loaded")}
       onError={() => setStatus("error")}
     />
+  );
+}
+
+function UsageInfoFooter() {
+  const snapshot = useUsageInfo();
+  const [, forceUpdate] = useState(0);
+
+  // Re-render every 30s for countdown updates
+  useEffect(() => {
+    const id = setInterval(() => forceUpdate((n) => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!snapshot || snapshot.windows.length === 0) return null;
+
+  const sessionWindow = snapshot.windows.find((w) => w.type === "five_hour");
+  const weeklyWindow = snapshot.windows.find((w) => w.type === "seven_day");
+
+  return (
+    <>
+      <SidebarSeparator />
+      <div className="px-3 py-2 space-y-1.5">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50">
+          Usage
+        </p>
+        {sessionWindow && (
+          <UsageWindowMiniRow
+            label="Session"
+            utilization={sessionWindow.utilization}
+            resetsAt={sessionWindow.resetsAt}
+            status={sessionWindow.status}
+          />
+        )}
+        {weeklyWindow && (
+          <UsageWindowMiniRow
+            label="Weekly"
+            utilization={weeklyWindow.utilization}
+            resetsAt={weeklyWindow.resetsAt}
+            status={weeklyWindow.status}
+          />
+        )}
+      </div>
+    </>
+  );
+}
+
+function UsageWindowMiniRow({
+  label,
+  utilization,
+  resetsAt,
+  status,
+}: {
+  label: string;
+  utilization: number;
+  resetsAt: string | null;
+  status: string;
+}) {
+  const remaining = Math.max(0, 100 - utilization);
+  const barColor = utilizationBarColor(utilization);
+  const countdown = resetCountdown(resetsAt);
+  const isWarning = status === "rejected" || status === "allowed_warning";
+
+  return (
+    <div className="space-y-0.5">
+      <div className="flex items-center justify-between text-[10px]">
+        <span className="text-muted-foreground/70">{label}</span>
+        <div className="flex items-center gap-1.5">
+          {countdown && (
+            <span className="text-muted-foreground/40">{countdown}</span>
+          )}
+          <span className={isWarning ? "text-amber-400 font-medium" : "text-muted-foreground/60"}>
+            {Math.round(remaining)}%
+          </span>
+        </div>
+      </div>
+      <div className="relative h-1 w-full overflow-hidden rounded-full bg-muted/30">
+        <div
+          className={`absolute inset-y-0 left-0 rounded-full transition-all duration-500 ${barColor}`}
+          style={{ width: `${Math.min(100, utilization)}%` }}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -1296,6 +1380,7 @@ export default function Sidebar() {
         </SidebarGroup>
       </SidebarContent>
 
+      <UsageInfoFooter />
       <SidebarSeparator />
       <SidebarFooter className="gap-0 p-3">
         {addingProject ? (

@@ -40,6 +40,7 @@ import { GitServiceLive } from "./git/Layers/GitService";
 import { BunPtyAdapterLive } from "./terminal/Layers/BunPTY";
 import { NodePtyAdapterLive } from "./terminal/Layers/NodePTY";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
+import { UsageTrackerLive } from "./usageTracker";
 
 export function makeProviderSessionDirectoryLayer(): Layer.Layer<
   ProviderSessionDirectory,
@@ -111,6 +112,7 @@ export function makeServerRuntimeServicesLayer() {
   );
   const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
+    Layer.provideMerge(UsageTrackerLive),
   );
   const providerCommandReactorLayer = ProviderCommandReactorLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
@@ -148,6 +150,7 @@ export function makeServerRuntimeServicesLayer() {
     textGenerationLayer,
     terminalLayer,
     KeybindingsLive,
+    UsageTrackerLive,
   ).pipe(
     Layer.provideMerge(activeTextGenProviderLayer),
     Layer.provideMerge(NodeServices.layer),

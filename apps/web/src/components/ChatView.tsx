@@ -1831,6 +1831,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
     ],
   );
 
+  // When the model self-enters plan mode via EnterPlanMode tool, sync the
+  // frontend interaction mode so the UI reflects the active mode and
+  // subsequent approval flows work correctly.
+  useEffect(() => {
+    if (interactionMode === "plan") return;
+    const hasEnterPlanMode = workLogEntries.some(
+      (entry) => entry.toolName === "EnterPlanMode",
+    );
+    if (hasEnterPlanMode) {
+      handleInteractionModeChange("plan");
+    }
+  }, [interactionMode, workLogEntries, handleInteractionModeChange]);
+
   const persistThreadSettingsForNextTurn = useCallback(
     async (input: {
       threadId: ThreadId;
@@ -4483,7 +4496,11 @@ const PlanApprovalCard = memo(function PlanApprovalCard({
           <div
             className={cn(
               "relative rounded-lg border border-border/60 bg-muted/20 px-4 py-3 mb-1",
-              canCollapse && !expanded && "max-h-72 overflow-hidden",
+              canCollapse && !expanded
+                ? "max-h-72 overflow-hidden"
+                : expanded
+                  ? "max-h-[70vh] overflow-y-auto"
+                  : "",
             )}
           >
             <ChatMarkdown text={planMarkdown} cwd={undefined} isStreaming={false} />

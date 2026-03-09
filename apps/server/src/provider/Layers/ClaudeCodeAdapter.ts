@@ -1805,23 +1805,62 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
                 } satisfies PermissionResult;
               }
 
-              // In plan mode, only allow ExitPlanMode (which goes through approval)
-              // and deny all other tools so Claude cannot edit/execute while planning.
-              if (context.activePermissionMode === "plan" && toolName !== "ExitPlanMode") {
+              // Tools that are allowed during plan mode for codebase exploration.
+              const PLAN_MODE_ALLOWED_TOOLS = new Set([
+                "ExitPlanMode",
+                "EnterPlanMode",
+                "Read",
+                "Grep",
+                "Glob",
+                "AskUserQuestion",
+                "TodoWrite",
+              ]);
+
+              // In plan mode, allow exploration/read-only tools and ExitPlanMode
+              // but deny all implementation tools (Edit, Write, Bash, etc.).
+              if (
+                context.activePermissionMode === "plan" &&
+                !PLAN_MODE_ALLOWED_TOOLS.has(toolName)
+              ) {
                 return {
                   behavior: "deny",
                   message:
                     `DENIED — Plan mode is active. You cannot use "${toolName}" or any other implementation tool right now. ` +
-                    "You must ONLY produce a plan and call the ExitPlanMode tool to propose it. " +
-                    "The user will review and approve the plan before any implementation can begin. " +
-                    "Do NOT attempt to use any other tool.",
+                    "You may use Read, Grep, Glob, and AskUserQuestion to explore the codebase, " +
+                    "then call the ExitPlanMode tool to propose your plan for review. " +
+                    "Do NOT attempt to use any implementation tool.",
                 } satisfies PermissionResult;
               }
 
               const runtimeMode = input.runtimeMode ?? "full-access";
               // ExitPlanMode must go through the approval flow even in full-access
               // so the user can review and approve/deny the plan.
-              if (runtimeMode === "full-access" && toolName !== "ExitPlanMode") {
+              // EnterPlanMode needs special handling to switch the permission mode.
+              if (
+                runtimeMode === "full-access" &&
+                toolName !== "ExitPlanMode" &&
+                toolName !== "EnterPlanMode"
+              ) {
+                return {
+                  behavior: "allow",
+                  updatedInput: toolInput,
+                } satisfies PermissionResult;
+              }
+
+              // When the model self-enters plan mode via EnterPlanMode, update
+              // the adapter's permission mode so subsequent tool calls are
+              // correctly filtered to read-only/exploration tools.
+              if (toolName === "EnterPlanMode") {
+                context.activePermissionMode = "plan";
+                yield* Effect.tryPromise({
+                  try: () => context.query.setPermissionMode("plan"),
+                  catch: (cause) =>
+                    toRequestError(
+                      context.session.threadId,
+                      "turn/setPermissionMode/enterPlan",
+                      cause,
+                    ),
+                });
                 return {
                   behavior: "allow",
                   updatedInput: toolInput,

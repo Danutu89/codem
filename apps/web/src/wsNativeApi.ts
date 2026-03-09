@@ -4,6 +4,7 @@ import {
   ORCHESTRATION_WS_METHODS,
   type ContextMenuItem,
   type NativeApi,
+  ProviderUsageSnapshot,
   ServerConfigUpdatedPayload,
   TerminalEvent,
   BrowserTestProgress,
@@ -210,6 +211,13 @@ export function createWsNativeApi(): NativeApi {
       onProgress: (callback) =>
         transport.subscribe(WS_CHANNELS.browserTestProgress, (data) => {
           const payload = decodeAndWarnOnFailure(BrowserTestProgress, data);
+          if (payload) callback(payload);
+        }),
+    },
+    usage: {
+      onUsageUpdated: (callback) =>
+        transport.subscribe(WS_CHANNELS.providerUsageUpdated, (data) => {
+          const payload = decodeAndWarnOnFailure(ProviderUsageSnapshot, data);
           if (payload) callback(payload);
         }),
     },

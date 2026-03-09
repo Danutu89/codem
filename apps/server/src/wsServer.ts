@@ -78,6 +78,7 @@ import {
   runBrowserTest,
   stopBrowserTest,
 } from "./browserTest/browserTestRunner";
+import { UsageTrackerService } from "./usageTracker.ts";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -223,7 +224,8 @@ export type ServerRuntimeServices =
   | TerminalManager
   | Keybindings
   | Open
-  | AnalyticsService;
+  | AnalyticsService
+  | UsageTrackerService;
 
 export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycleError>()(
   "ServerLifecycleError",
@@ -629,6 +631,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       type: "push",
       channel: ORCHESTRATION_WS_CHANNELS.domainEvent,
       data: event,
+    }),
+  ).pipe(Effect.forkIn(subscriptionsScope));
+
+  const usageTracker = yield* UsageTrackerService;
+  yield* Stream.runForEach(usageTracker.stream, (snapshot) =>
+    broadcastPush({
+      type: "push",
+      channel: WS_CHANNELS.providerUsageUpdated,
+      data: snapshot,
     }),
   ).pipe(Effect.forkIn(subscriptionsScope));
 

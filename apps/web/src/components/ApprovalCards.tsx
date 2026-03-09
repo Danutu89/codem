@@ -259,8 +259,12 @@ export const FileChangeApprovalCard = memo(function FileChangeApprovalCard({
       {parsedFiles.length > 0 ? (
         <div
           className={cn(
-            "relative rounded-lg border border-border/60 overflow-hidden",
-            showExpander && "max-h-80",
+            "relative rounded-lg border border-border/60",
+            showExpander
+              ? "max-h-80 overflow-hidden"
+              : expanded
+                ? "max-h-[70vh] overflow-y-auto"
+                : "overflow-hidden",
           )}
         >
           {parsedFiles.map((fileDiff, index) => (
@@ -284,8 +288,12 @@ export const FileChangeApprovalCard = memo(function FileChangeApprovalCard({
         /* Fallback: show raw patch as preformatted text */
         <div
           className={cn(
-            "relative rounded-lg border border-border/60 bg-muted/20 overflow-hidden",
-            showExpander && "max-h-80",
+            "relative rounded-lg border border-border/60 bg-muted/20",
+            showExpander
+              ? "max-h-80 overflow-hidden"
+              : expanded
+                ? "max-h-[70vh] overflow-y-auto"
+                : "overflow-hidden",
           )}
         >
           <pre className="p-3 font-mono text-[11px] leading-relaxed text-muted-foreground/90 whitespace-pre-wrap break-words">

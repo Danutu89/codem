@@ -15,6 +15,7 @@ import { Cache, Cause, Duration, Effect, Layer, Option, Queue, Ref, Stream } fro
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
+import { UsageTrackerService } from "../../usageTracker.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProviderRuntimeIngestionService,
@@ -489,6 +490,7 @@ function runtimeEventToActivities(
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
+  const usageTracker = yield* UsageTrackerService;
 
   const assistantDeliveryModeRef = yield* Ref.make<AssistantDeliveryMode>(
     DEFAULT_ASSISTANT_DELIVERY_MODE,
@@ -1078,6 +1080,37 @@ const make = Effect.gen(function* () {
             assistantMessageId,
             checkpointTurnCount: thread.checkpoints.length + 1,
             createdAt: now,
+          });
+        }
+      }
+
+      // ── Usage tracking ────────────────────────────────────────────────
+      {
+        const providerKey: "claudeCode" | "codex" | "cursor" =
+          event.provider === "claudeCode" || event.provider === "codex" || event.provider === "cursor"
+            ? event.provider
+            : "claudeCode";
+
+        if (event.type === "account.rate-limits.updated") {
+          yield* usageTracker.ingestRateLimitEvent(
+            providerKey,
+            (event.payload as Record<string, unknown>).rateLimits,
+          );
+        }
+
+        if (event.type === "turn.completed") {
+          const payload = event.payload as Record<string, unknown>;
+          const rawUsage = payload.usage as
+            | {
+                input_tokens?: number;
+                output_tokens?: number;
+                cache_read_input_tokens?: number;
+                cache_creation_input_tokens?: number;
+              }
+            | undefined;
+          yield* usageTracker.ingestTurnUsage(providerKey, {
+            totalCostUsd: typeof payload.totalCostUsd === "number" ? payload.totalCostUsd : undefined,
+            usage: rawUsage,
           });
         }
       }

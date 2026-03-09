@@ -83,6 +83,7 @@ export const WS_CHANNELS = {
   serverWelcome: "server.welcome",
   serverConfigUpdated: "server.configUpdated",
   browserTestProgress: "browserTest.progress",
+  providerUsageUpdated: "provider.usageUpdated",
 } as const;
 
 // -- Tagged Union of all request body schemas ─────────────────────────
