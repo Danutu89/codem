@@ -8,6 +8,7 @@
  * @module ClaudeTextGeneration
  */
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { execFileSync } from "node:child_process";
 import { Effect, Layer, Schema } from "effect";
 
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
@@ -23,6 +24,15 @@ import { ClaudeTextGenerationTag } from "../Services/TextGenerationTags.ts";
 
 const CLAUDE_DEFAULT_MODEL = "claude-sonnet-4-6";
 const CLAUDE_TIMEOUT_MS = 180_000;
+
+function resolveSystemClaudePath(): string | undefined {
+  try {
+    const cmd = process.platform === "win32" ? "where" : "which";
+    return execFileSync(cmd, ["claude"], { encoding: "utf8" }).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function toJsonSchemaObject(schema: Schema.Top): Record<string, unknown> {
   const document = Schema.toJsonSchemaDocument(schema);
@@ -100,6 +110,7 @@ function runClaudeJson<S extends Schema.Top & { readonly DecodingServices: never
               queryRuntime.close();
             });
 
+            const execPath = resolveSystemClaudePath();
             const queryRuntime = query({
               prompt,
               options: {
@@ -110,6 +121,7 @@ function runClaudeJson<S extends Schema.Top & { readonly DecodingServices: never
                   type: "json_schema",
                   schema: jsonSchema,
                 },
+                ...(execPath ? { pathToClaudeCodeExecutable: execPath } : {}),
               },
             });
 
