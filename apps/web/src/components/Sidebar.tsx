@@ -199,19 +199,14 @@ function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
   return null;
 }
 
-function T3Wordmark() {
+function CodemWordmark() {
   return (
-    <svg
-      aria-label="T3"
-      className="h-2.5 w-auto shrink-0 text-foreground"
-      viewBox="15.5309 37 94.3941 56.96"
-      xmlns="http://www.w3.org/2000/svg"
+    <span
+      aria-label="Codem"
+      className="text-sm font-semibold tracking-tight shrink-0 text-foreground"
     >
-      <path
-        d="M33.4509 93V47.56H15.5309V37H64.3309V47.56H46.4109V93H33.4509ZM86.7253 93.96C82.832 93.96 78.9653 93.4533 75.1253 92.44C71.2853 91.3733 68.032 89.88 65.3653 87.96L70.4053 78.04C72.5386 79.5867 75.0186 80.8133 77.8453 81.72C80.672 82.6267 83.5253 83.08 86.4053 83.08C89.6586 83.08 92.2186 82.44 94.0853 81.16C95.952 79.88 96.8853 78.12 96.8853 75.88C96.8853 73.7467 96.0586 72.0667 94.4053 70.84C92.752 69.6133 90.0853 69 86.4053 69H80.4853V60.44L96.0853 42.76L97.5253 47.4H68.1653V37H107.365V45.4L91.8453 63.08L85.2853 59.32H89.0453C95.9253 59.32 101.125 60.8667 104.645 63.96C108.165 67.0533 109.925 71.0267 109.925 75.88C109.925 79.0267 109.099 81.9867 107.445 84.76C105.792 87.48 103.259 89.6933 99.8453 91.4C96.432 93.1067 92.0586 93.96 86.7253 93.96Z"
-        fill="currentColor"
-      />
-    </svg>
+      Codem
+    </span>
   );
 }
 
@@ -269,7 +264,14 @@ function UsageInfoFooter() {
     return () => clearInterval(id);
   }, []);
 
-  if (!snapshot || snapshot.windows.length === 0) return null;
+  if (!snapshot) return null;
+
+  const hasWindows = snapshot.windows.length > 0;
+  const hasCost = snapshot.sessionCostUsd != null && snapshot.sessionCostUsd > 0;
+  const hasTokens = snapshot.sessionTokens != null &&
+    (snapshot.sessionTokens.inputTokens > 0 || snapshot.sessionTokens.outputTokens > 0);
+
+  if (!hasWindows && !hasCost && !hasTokens) return null;
 
   const sessionWindow = snapshot.windows.find((w) => w.type === "five_hour");
   const weeklyWindow = snapshot.windows.find((w) => w.type === "seven_day");
@@ -279,11 +281,11 @@ function UsageInfoFooter() {
       <SidebarSeparator />
       <div className="px-3 py-2 space-y-1.5">
         <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50">
-          Usage
+          Claude Code Usage
         </p>
         {sessionWindow && (
           <UsageWindowMiniRow
-            label="Session"
+            label="Session (5h)"
             utilization={sessionWindow.utilization}
             resetsAt={sessionWindow.resetsAt}
             status={sessionWindow.status}
@@ -296,6 +298,22 @@ function UsageInfoFooter() {
             resetsAt={weeklyWindow.resetsAt}
             status={weeklyWindow.status}
           />
+        )}
+        {hasCost && (
+          <div className="flex items-center justify-between text-[10px]">
+            <span className="text-muted-foreground/70">Session cost</span>
+            <span className="text-muted-foreground/60">
+              ${snapshot.sessionCostUsd!.toFixed(4)}
+            </span>
+          </div>
+        )}
+        {hasTokens && (
+          <div className="flex items-center justify-between text-[10px]">
+            <span className="text-muted-foreground/70">Tokens</span>
+            <span className="text-muted-foreground/60">
+              {formatTokenCount(snapshot.sessionTokens!.inputTokens)} in / {formatTokenCount(snapshot.sessionTokens!.outputTokens)} out
+            </span>
+          </div>
         )}
       </div>
     </>
@@ -339,6 +357,12 @@ function UsageWindowMiniRow({
       </div>
     </div>
   );
+}
+
+function formatTokenCount(count: number): string {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
+  return String(count);
 }
 
 export default function Sidebar() {
@@ -1063,7 +1087,7 @@ export default function Sidebar() {
     <div className="flex items-center gap-2">
       <SidebarTrigger className="shrink-0 md:hidden" />
       <div className="flex min-w-0 flex-1 items-center gap-1 mt-2 ml-1">
-        <T3Wordmark />
+        <CodemWordmark />
         <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
           Code
         </span>

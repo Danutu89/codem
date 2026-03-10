@@ -6230,14 +6230,14 @@ const OpenInPicker = memo(function OpenInPicker({
   const allOptions = useMemo<Array<{ label: string; Icon: Icon; value: EditorId }>>(
     () => [
       {
-        label: "Cursor",
-        Icon: CursorIcon,
-        value: "cursor",
-      },
-      {
         label: "VS Code",
         Icon: VisualStudioCode,
         value: "vscode",
+      },
+      {
+        label: "Cursor",
+        Icon: CursorIcon,
+        value: "cursor",
       },
       {
         label: "Zed",

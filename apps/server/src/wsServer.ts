@@ -256,8 +256,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     logWebSocketEvents,
     autoBootstrapProjectFromCwd,
   } = serverConfig;
-  const availableEditors = resolveAvailableEditors();
-
   const gitManager = yield* GitManager;
   const terminalManager = yield* TerminalManager;
   const keybindingsManager = yield* Keybindings;
@@ -965,7 +963,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
           providers: providerStatuses,
-          availableEditors,
+          availableEditors: resolveAvailableEditors(),
         };
 
       case WS_METHODS.serverUpsertKeybinding: {

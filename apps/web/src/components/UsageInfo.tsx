@@ -126,7 +126,12 @@ export function UsageInfoBadge() {
 export function UsageInfoPanel() {
   const snapshot = useUsageInfo();
 
-  if (!snapshot || snapshot.windows.length === 0) {
+  const hasCost = snapshot?.sessionCostUsd != null && snapshot.sessionCostUsd > 0;
+  const hasTokens = snapshot?.sessionTokens != null &&
+    (snapshot.sessionTokens.inputTokens > 0 || snapshot.sessionTokens.outputTokens > 0);
+  const hasWindows = snapshot != null && snapshot.windows.length > 0;
+
+  if (!snapshot || (!hasWindows && !hasCost && !hasTokens)) {
     return (
       <div className="p-3 text-[11px] text-muted-foreground/50">
         No usage data yet. Usage info appears after the first Claude Code interaction.

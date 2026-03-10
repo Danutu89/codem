@@ -1522,6 +1522,12 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
 
             yield* emitRuntimeError(context, message, cause);
             yield* completeTurn(context, "failed", message);
+
+            // Mark the session as dead so requireSession() rejects future
+            // calls and ensureSessionForThread() starts a fresh session
+            // instead of sending turns into a dead query.
+            context.stopped = true;
+            sessions.delete(context.session.threadId);
           }),
         ),
       );

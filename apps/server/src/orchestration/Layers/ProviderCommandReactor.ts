@@ -305,10 +305,23 @@ const make = Effect.gen(function* () {
         onSome: (binding) => binding.resumeCursor ?? undefined,
       });
 
-      const resumeCursor =
+      // When restarting after an error with no live provider session, the
+      // persisted `resumeSessionAt` (message UUID) may reference a message
+      // that no longer exists in the Claude backend (e.g. "No message found
+      // with message.uuid").  Strip it so the adapter resumes the session
+      // without trying to skip to a specific message offset.
+      const isErrorRecovery = !activeSession && thread.session?.status === "error";
+      const rawResumeCursor =
         providerChanged || shouldRestartForModelChange
           ? undefined
           : (activeSession?.resumeCursor ?? persistedResumeCursor);
+      const resumeCursor =
+        isErrorRecovery && rawResumeCursor && typeof rawResumeCursor === "object"
+          ? (() => {
+              const { resumeSessionAt: _stale, ...rest } = rawResumeCursor as Record<string, unknown>;
+              return Object.keys(rest).length > 0 ? rest : undefined;
+            })()
+          : rawResumeCursor;
       yield* Effect.logInfo("provider command reactor restarting provider session", {
         threadId,
         existingSessionThreadId,

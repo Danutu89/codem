@@ -1084,34 +1084,44 @@ const make = Effect.gen(function* () {
         }
       }
 
-      // ── Usage tracking ────────────────────────────────────────────────
+      // ── Usage tracking (fire-and-forget, must not block event pipeline) ─
       {
         const providerKey: "claudeCode" | "codex" | "cursor" =
           event.provider === "claudeCode" || event.provider === "codex" || event.provider === "cursor"
             ? event.provider
             : "claudeCode";
 
-        if (event.type === "account.rate-limits.updated") {
-          yield* usageTracker.ingestRateLimitEvent(
-            providerKey,
-            (event.payload as Record<string, unknown>).rateLimits,
-          );
-        }
+        const usageEffect =
+          event.type === "account.rate-limits.updated"
+            ? usageTracker.ingestRateLimitEvent(
+                providerKey,
+                (event.payload as Record<string, unknown>).rateLimits,
+              )
+            : event.type === "turn.completed"
+              ? (() => {
+                  const payload = event.payload as Record<string, unknown>;
+                  const rawUsage = payload.usage as
+                    | {
+                        input_tokens?: number;
+                        output_tokens?: number;
+                        cache_read_input_tokens?: number;
+                        cache_creation_input_tokens?: number;
+                      }
+                    | undefined;
+                  return usageTracker.ingestTurnUsage(providerKey, {
+                    totalCostUsd:
+                      typeof payload.totalCostUsd === "number" ? payload.totalCostUsd : undefined,
+                    usage: rawUsage,
+                  });
+                })()
+              : null;
 
-        if (event.type === "turn.completed") {
-          const payload = event.payload as Record<string, unknown>;
-          const rawUsage = payload.usage as
-            | {
-                input_tokens?: number;
-                output_tokens?: number;
-                cache_read_input_tokens?: number;
-                cache_creation_input_tokens?: number;
-              }
-            | undefined;
-          yield* usageTracker.ingestTurnUsage(providerKey, {
-            totalCostUsd: typeof payload.totalCostUsd === "number" ? payload.totalCostUsd : undefined,
-            usage: rawUsage,
-          });
+        if (usageEffect) {
+          // Run usage tracking as a detached promise so it never blocks
+          // or interferes with the core orchestration event pipeline.
+          Effect.runPromise(usageEffect.pipe(Effect.catchCause(() => Effect.void))).catch(
+            () => {},
+          );
         }
       }
 

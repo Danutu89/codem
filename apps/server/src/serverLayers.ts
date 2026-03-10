@@ -150,7 +150,6 @@ export function makeServerRuntimeServicesLayer() {
     textGenerationLayer,
     terminalLayer,
     KeybindingsLive,
-    UsageTrackerLive,
   ).pipe(
     Layer.provideMerge(activeTextGenProviderLayer),
     Layer.provideMerge(NodeServices.layer),
