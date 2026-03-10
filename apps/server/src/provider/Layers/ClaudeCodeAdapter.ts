@@ -82,6 +82,7 @@ interface ClaudeTurnState {
   readonly items: Array<unknown>;
   readonly messageCompleted: boolean;
   readonly emittedTextDelta: boolean;
+  readonly hadToolUseSinceLastText: boolean;
   readonly fallbackAssistantText: string;
 }
 
@@ -874,6 +875,14 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
             event.delta.text.length > 0 &&
             context.turnState
           ) {
+            let deltaText = event.delta.text;
+            if (context.turnState.hadToolUseSinceLastText) {
+              deltaText = "\n\n" + deltaText;
+              context.turnState = {
+                ...context.turnState,
+                hadToolUseSinceLastText: false,
+              };
+            }
             if (!context.turnState.emittedTextDelta) {
               context.turnState = {
                 ...context.turnState,
@@ -891,7 +900,7 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
               itemId: asRuntimeItemId(context.turnState.assistantItemId),
               payload: {
                 streamKind: streamKindFromDeltaType(event.delta.type),
-                delta: event.delta.text,
+                delta: deltaText,
               },
               providerRefs: {
                 ...providerThreadRef(context),
@@ -916,6 +925,13 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
             block.type !== "mcp_tool_use"
           ) {
             return;
+          }
+
+          if (context.turnState && context.turnState.emittedTextDelta) {
+            context.turnState = {
+              ...context.turnState,
+              hadToolUseSinceLastText: true,
+            };
           }
 
           const toolName = block.name;
@@ -2200,6 +2216,7 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
           items: [],
           messageCompleted: false,
           emittedTextDelta: false,
+          hadToolUseSinceLastText: false,
           fallbackAssistantText: "",
         };
 

@@ -20,9 +20,7 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
-async function withRouteServer(
-  run: (baseUrl: string) => Promise<void>,
-): Promise<void> {
+async function withRouteServer(run: (baseUrl: string) => Promise<void>): Promise<void> {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     if (tryHandleProjectFaviconRequest(url, res)) {
@@ -104,7 +102,10 @@ describe("tryHandleProjectFaviconRequest", () => {
     const projectDir = makeTempDir("t3code-favicon-route-source-");
     const iconPath = path.join(projectDir, "public", "brand", "logo.svg");
     fs.mkdirSync(path.dirname(iconPath), { recursive: true });
-    fs.writeFileSync(path.join(projectDir, "index.html"), '<link rel="icon" href="/brand/logo.svg">');
+    fs.writeFileSync(
+      path.join(projectDir, "index.html"),
+      '<link rel="icon" href="/brand/logo.svg">',
+    );
     fs.writeFileSync(iconPath, "<svg>brand</svg>", "utf8");
 
     await withRouteServer(async (baseUrl) => {
@@ -120,7 +121,10 @@ describe("tryHandleProjectFaviconRequest", () => {
     const projectDir = makeTempDir("t3code-favicon-route-html-order-");
     const iconPath = path.join(projectDir, "public", "brand", "logo.svg");
     fs.mkdirSync(path.dirname(iconPath), { recursive: true });
-    fs.writeFileSync(path.join(projectDir, "index.html"), '<link href="/brand/logo.svg" rel="icon">');
+    fs.writeFileSync(
+      path.join(projectDir, "index.html"),
+      '<link href="/brand/logo.svg" rel="icon">',
+    );
     fs.writeFileSync(iconPath, "<svg>brand-html-order</svg>", "utf8");
 
     await withRouteServer(async (baseUrl) => {
@@ -161,6 +165,113 @@ describe("tryHandleProjectFaviconRequest", () => {
       const response = await request(baseUrl, pathname);
       expect(response.statusCode).toBe(200);
       expect(response.contentType).toContain("image/svg+xml");
+      expect(response.body).toContain('data-fallback="project-favicon"');
+    });
+  });
+
+  it("finds a favicon in a deeply nested directory", async () => {
+    const projectDir = makeTempDir("t3code-favicon-route-deep-");
+    const deepPath = path.join(projectDir, "src", "assets", "images");
+    fs.mkdirSync(deepPath, { recursive: true });
+    fs.writeFileSync(path.join(deepPath, "favicon.png"), "PNG-DEEP", "utf8");
+
+    await withRouteServer(async (baseUrl) => {
+      const pathname = `/api/project-favicon?cwd=${encodeURIComponent(projectDir)}`;
+      const response = await request(baseUrl, pathname);
+      expect(response.statusCode).toBe(200);
+      expect(response.contentType).toContain("image/png");
+      expect(response.body).toBe("PNG-DEEP");
+    });
+  });
+
+  it("prefers favicon name over logo name at shallower depth", async () => {
+    const projectDir = makeTempDir("t3code-favicon-route-priority-name-");
+    const deepDir = path.join(projectDir, "deep", "nested", "dir");
+    const shallowDir = path.join(projectDir, "shallow");
+    fs.mkdirSync(deepDir, { recursive: true });
+    fs.mkdirSync(shallowDir, { recursive: true });
+    fs.writeFileSync(path.join(deepDir, "favicon.ico"), "FAVICON-DEEP", "utf8");
+    fs.writeFileSync(path.join(shallowDir, "logo.svg"), "LOGO-SHALLOW", "utf8");
+
+    await withRouteServer(async (baseUrl) => {
+      const pathname = `/api/project-favicon?cwd=${encodeURIComponent(projectDir)}`;
+      const response = await request(baseUrl, pathname);
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toBe("FAVICON-DEEP");
+    });
+  });
+
+  it("prefers svg over png for the same favicon name", async () => {
+    const projectDir = makeTempDir("t3code-favicon-route-priority-ext-");
+    const dir = path.join(projectDir, "resources", "icons");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "favicon.svg"), "<svg>SVG</svg>", "utf8");
+    fs.writeFileSync(path.join(dir, "favicon.png"), "PNG", "utf8");
+
+    await withRouteServer(async (baseUrl) => {
+      const pathname = `/api/project-favicon?cwd=${encodeURIComponent(projectDir)}`;
+      const response = await request(baseUrl, pathname);
+      expect(response.statusCode).toBe(200);
+      expect(response.contentType).toContain("image/svg+xml");
+      expect(response.body).toBe("<svg>SVG</svg>");
+    });
+  });
+
+  it("ignores favicons inside node_modules", async () => {
+    const projectDir = makeTempDir("t3code-favicon-route-skip-nodemod-");
+    const nmDir = path.join(projectDir, "node_modules", "some-pkg");
+    fs.mkdirSync(nmDir, { recursive: true });
+    fs.writeFileSync(path.join(nmDir, "favicon.png"), "NM-FAVICON", "utf8");
+
+    await withRouteServer(async (baseUrl) => {
+      const pathname = `/api/project-favicon?cwd=${encodeURIComponent(projectDir)}`;
+      const response = await request(baseUrl, pathname);
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('data-fallback="project-favicon"');
+    });
+  });
+
+  it("ignores favicons inside dot-prefixed directories", async () => {
+    const projectDir = makeTempDir("t3code-favicon-route-skip-dotdir-");
+    const hiddenDir = path.join(projectDir, ".hidden", "assets");
+    fs.mkdirSync(hiddenDir, { recursive: true });
+    fs.writeFileSync(path.join(hiddenDir, "favicon.png"), "HIDDEN", "utf8");
+
+    await withRouteServer(async (baseUrl) => {
+      const pathname = `/api/project-favicon?cwd=${encodeURIComponent(projectDir)}`;
+      const response = await request(baseUrl, pathname);
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('data-fallback="project-favicon"');
+    });
+  });
+
+  it("static candidates take precedence over deep search results", async () => {
+    const projectDir = makeTempDir("t3code-favicon-route-static-wins-");
+    fs.writeFileSync(path.join(projectDir, "favicon.svg"), "<svg>ROOT</svg>", "utf8");
+    const deepDir = path.join(projectDir, "deep", "nested");
+    fs.mkdirSync(deepDir, { recursive: true });
+    fs.writeFileSync(path.join(deepDir, "favicon.png"), "DEEP", "utf8");
+
+    await withRouteServer(async (baseUrl) => {
+      const pathname = `/api/project-favicon?cwd=${encodeURIComponent(projectDir)}`;
+      const response = await request(baseUrl, pathname);
+      expect(response.statusCode).toBe(200);
+      expect(response.contentType).toContain("image/svg+xml");
+      expect(response.body).toBe("<svg>ROOT</svg>");
+    });
+  });
+
+  it("respects depth limit and ignores favicons beyond max depth", async () => {
+    const projectDir = makeTempDir("t3code-favicon-route-depth-limit-");
+    // Create a favicon at depth 7 (beyond the max depth of 5)
+    const deepPath = path.join(projectDir, "a", "b", "c", "d", "e", "f", "g");
+    fs.mkdirSync(deepPath, { recursive: true });
+    fs.writeFileSync(path.join(deepPath, "favicon.png"), "TOO-DEEP", "utf8");
+
+    await withRouteServer(async (baseUrl) => {
+      const pathname = `/api/project-favicon?cwd=${encodeURIComponent(projectDir)}`;
+      const response = await request(baseUrl, pathname);
+      expect(response.statusCode).toBe(200);
       expect(response.body).toContain('data-fallback="project-favicon"');
     });
   });

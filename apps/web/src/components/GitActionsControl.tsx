@@ -60,11 +60,17 @@ interface PendingDefaultBranchAction {
 
 type GitActionToastId = ReturnType<typeof toastManager.add>;
 
-function getMenuActionDisabledReason(
-  item: GitActionMenuItem,
-  gitStatus: GitStatusResult | null,
-  isBusy: boolean,
-): string | null {
+function getMenuActionDisabledReason({
+  item,
+  gitStatus,
+  isBusy,
+  hasOriginRemote,
+}: {
+  item: GitActionMenuItem;
+  gitStatus: GitStatusResult | null;
+  isBusy: boolean;
+  hasOriginRemote: boolean;
+}): string | null {
   if (!item.disabled) return null;
   if (isBusy) return "Git action in progress.";
   if (!gitStatus) return "Git status is unavailable.";
@@ -92,6 +98,9 @@ function getMenuActionDisabledReason(
     if (isBehind) {
       return "Branch is behind upstream. Pull/rebase before pushing.";
     }
+    if (!gitStatus.hasUpstream && !hasOriginRemote) {
+      return 'Add an "origin" remote before pushing.';
+    }
     if (!isAhead) {
       return "No local commits to push.";
     }
@@ -99,13 +108,16 @@ function getMenuActionDisabledReason(
   }
 
   if (hasOpenPr) {
-    return "Open PR is currently unavailable.";
+    return "View PR is currently unavailable.";
   }
   if (!hasBranch) {
     return "Detached HEAD: checkout a branch before creating a PR.";
   }
   if (hasChanges) {
     return "Commit local changes before creating a PR.";
+  }
+  if (!gitStatus.hasUpstream && !hasOriginRemote) {
+    return 'Add an "origin" remote before creating a PR.';
   }
   if (!isAhead) {
     return "No local commits to include in a PR.";
@@ -155,6 +167,7 @@ export default function GitActionsControl({ gitCwd, activeThreadId, activeProvid
   const { data: branchList = null } = useQuery(gitBranchesQueryOptions(gitCwd));
   // Default to true while loading so we don't flash init controls.
   const isRepo = branchList?.isRepo ?? true;
+  const hasOriginRemote = branchList?.hasOriginRemote ?? false;
   const currentBranch = branchList?.branches.find((branch) => branch.current)?.name ?? null;
   const isGitStatusOutOfSync =
     !!gitStatus?.branch && !!currentBranch && gitStatus.branch !== currentBranch;
@@ -185,12 +198,13 @@ export default function GitActionsControl({ gitCwd, activeThreadId, activeProvid
   }, [branchList?.branches, gitStatusForActions?.branch]);
 
   const gitActionMenuItems = useMemo(
-    () => buildMenuItems(gitStatusForActions, isGitActionRunning),
-    [gitStatusForActions, isGitActionRunning],
+    () => buildMenuItems(gitStatusForActions, isGitActionRunning, hasOriginRemote),
+    [gitStatusForActions, hasOriginRemote, isGitActionRunning],
   );
   const quickAction = useMemo(
-    () => resolveQuickAction(gitStatusForActions, isGitActionRunning, isDefaultBranch),
-    [gitStatusForActions, isDefaultBranch, isGitActionRunning],
+    () =>
+      resolveQuickAction(gitStatusForActions, isGitActionRunning, isDefaultBranch, hasOriginRemote),
+    [gitStatusForActions, hasOriginRemote, isDefaultBranch, isGitActionRunning],
   );
   const quickActionDisabledReason = quickAction.disabled
     ? (quickAction.hint ?? "This action is currently unavailable.")
@@ -256,7 +270,8 @@ export default function GitActionsControl({ gitCwd, activeThreadId, activeProvid
     }) => {
       const actionStatus = statusOverride ?? gitStatusForActions;
       const actionBranch = actionStatus?.branch ?? null;
-      const actionIsDefaultBranch = isDefaultBranchOverride ?? (featureBranch ? false : isDefaultBranch);
+      const actionIsDefaultBranch =
+        isDefaultBranchOverride ?? (featureBranch ? false : isDefaultBranch);
       const includesCommit =
         !forcePushOnlyProgress && (action === "commit" || !!actionStatus?.hasWorkingTreeChanges);
       if (
@@ -333,7 +348,8 @@ export default function GitActionsControl({ gitCwd, activeThreadId, activeProvid
         stopProgressUpdates();
         const resultToast = summarizeGitResult(result);
 
-        const existingOpenPrUrl = actionStatus?.pr?.state === "open" ? actionStatus.pr.url : undefined;
+        const existingOpenPrUrl =
+          actionStatus?.pr?.state === "open" ? actionStatus.pr.url : undefined;
         const prUrl = result.pr.url ?? existingOpenPrUrl;
         const shouldOfferPushCta = action === "commit" && result.commit.status === "created";
         const shouldOfferOpenPrCta =
@@ -378,7 +394,7 @@ export default function GitActionsControl({ gitCwd, activeThreadId, activeProvid
             : shouldOfferOpenPrCta
               ? {
                   actionProps: {
-                    children: "Open PR",
+                    children: "View PR",
                     onClick: () => {
                       const api = readNativeApi();
                       if (!api) return;
@@ -427,7 +443,8 @@ export default function GitActionsControl({ gitCwd, activeThreadId, activeProvid
 
   const continuePendingDefaultBranchAction = useCallback(() => {
     if (!pendingDefaultBranchAction) return;
-    const { action, commitMessage, forcePushOnlyProgress, onConfirmed } = pendingDefaultBranchAction;
+    const { action, commitMessage, forcePushOnlyProgress, onConfirmed } =
+      pendingDefaultBranchAction;
     setPendingDefaultBranchAction(null);
     void runGitActionWithToast({
       action,
@@ -456,7 +473,8 @@ export default function GitActionsControl({ gitCwd, activeThreadId, activeProvid
 
   const checkoutFeatureBranchAndContinuePendingAction = useCallback(() => {
     if (!pendingDefaultBranchAction) return;
-    const { action, commitMessage, forcePushOnlyProgress, onConfirmed } = pendingDefaultBranchAction;
+    const { action, commitMessage, forcePushOnlyProgress, onConfirmed } =
+      pendingDefaultBranchAction;
     setPendingDefaultBranchAction(null);
     checkoutNewBranchAndRunAction({
       action,
@@ -644,11 +662,12 @@ export default function GitActionsControl({ gitCwd, activeThreadId, activeProvid
             </MenuTrigger>
             <MenuPopup align="end" className="w-full">
               {gitActionMenuItems.map((item) => {
-                const disabledReason = getMenuActionDisabledReason(
+                const disabledReason = getMenuActionDisabledReason({
                   item,
-                  gitStatusForActions,
-                  isGitActionRunning,
-                );
+                  gitStatus: gitStatusForActions,
+                  isBusy: isGitActionRunning,
+                  hasOriginRemote,
+                });
                 if (item.disabled && disabledReason) {
                   return (
                     <Popover key={`${item.id}-${item.label}`}>
@@ -728,7 +747,9 @@ export default function GitActionsControl({ gitCwd, activeThreadId, activeProvid
               <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
                 <span className="text-muted-foreground">Branch</span>
                 <span className="flex items-center justify-between gap-2">
-                  <span className="font-medium">{gitStatusForActions?.branch ?? "(detached HEAD)"}</span>
+                  <span className="font-medium">
+                    {gitStatusForActions?.branch ?? "(detached HEAD)"}
+                  </span>
                   {isDefaultBranch && (
                     <span className="text-right text-warning text-xs">Warning: default branch</span>
                   )}

@@ -48,7 +48,7 @@ export interface UsageTrackerShape {
 export class UsageTrackerService extends ServiceMap.Service<
   UsageTrackerService,
   UsageTrackerShape
->()("t3/UsageTracker") {}
+>()("t3/usageTracker/UsageTrackerService") {}
 
 // ── Helpers ──────────────────────────────────────────────────────────
 

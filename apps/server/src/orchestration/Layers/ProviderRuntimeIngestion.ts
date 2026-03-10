@@ -211,9 +211,9 @@ function runtimeEventToActivities(
               ? "Command approval requested"
               : requestKind === "file-read"
                 ? "File-read approval requested"
-              : requestKind === "file-change"
-                ? "File-change approval requested"
-                : "Approval requested",
+                : requestKind === "file-change"
+                  ? "File-change approval requested"
+                  : "Approval requested",
           payload: {
             requestId: toApprovalRequestId(event.requestId),
             ...(requestKind ? { requestKind } : {}),
@@ -300,7 +300,9 @@ function runtimeEventToActivities(
           summary: "Plan updated",
           payload: {
             plan: event.payload.plan,
-            ...(event.payload.explanation !== undefined ? { explanation: event.payload.explanation } : {}),
+            ...(event.payload.explanation !== undefined
+              ? { explanation: event.payload.explanation }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -360,7 +362,9 @@ function runtimeEventToActivities(
           payload: {
             taskId: event.payload.taskId,
             ...(event.payload.taskType ? { taskType: event.payload.taskType } : {}),
-            ...(event.payload.description ? { detail: truncateDetail(event.payload.description) } : {}),
+            ...(event.payload.description
+              ? { detail: truncateDetail(event.payload.description) }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -530,11 +534,7 @@ const make = Effect.gen(function* () {
     return isGitRepository(workspaceCwd);
   });
 
-  const rememberAssistantMessageId = (
-    threadId: ThreadId,
-    turnId: TurnId,
-    messageId: MessageId,
-  ) =>
+  const rememberAssistantMessageId = (threadId: ThreadId, turnId: TurnId, messageId: MessageId) =>
     Cache.getOption(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId)).pipe(
       Effect.flatMap((existingIds) =>
         Cache.set(
@@ -552,11 +552,7 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const forgetAssistantMessageId = (
-    threadId: ThreadId,
-    turnId: TurnId,
-    messageId: MessageId,
-  ) =>
+  const forgetAssistantMessageId = (threadId: ThreadId, turnId: TurnId, messageId: MessageId) =>
     Cache.getOption(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId)).pipe(
       Effect.flatMap((existingIds) =>
         Option.match(existingIds, {
@@ -621,7 +617,8 @@ const make = Effect.gen(function* () {
         const existing = Option.getOrUndefined(existingEntry);
         return Cache.set(bufferedProposedPlanById, planId, {
           text: `${existing?.text ?? ""}${delta}`,
-          createdAt: existing?.createdAt && existing.createdAt.length > 0 ? existing.createdAt : createdAt,
+          createdAt:
+            existing?.createdAt && existing.createdAt.length > 0 ? existing.createdAt : createdAt,
         });
       }),
     );
@@ -638,7 +635,8 @@ const make = Effect.gen(function* () {
   const clearBufferedProposedPlan = (planId: string) =>
     Cache.invalidate(bufferedProposedPlanById, planId);
 
-  const clearAssistantMessageState = (messageId: MessageId) => clearBufferedAssistantText(messageId);
+  const clearAssistantMessageState = (messageId: MessageId) =>
+    clearBufferedAssistantText(messageId);
 
   const finalizeAssistantMessage = (input: {
     event: ProviderRuntimeEvent;
@@ -867,8 +865,8 @@ const make = Effect.gen(function* () {
             : event.type === "turn.completed" && runtimeTurnState(event) === "failed"
               ? (runtimeTurnErrorMessage(event) ?? thread.session?.lastError ?? "Turn failed")
               : status === "ready"
-              ? null
-              : (thread.session?.lastError ?? null);
+                ? null
+                : (thread.session?.lastError ?? null);
 
         if (shouldApplyThreadLifecycle) {
           yield* orchestrationEngine.dispatch({
@@ -940,7 +938,9 @@ const make = Effect.gen(function* () {
       const assistantCompletion =
         event.type === "item.completed" && event.payload.itemType === "assistant_message"
           ? {
-              messageId: MessageId.makeUnsafe(`assistant:${event.itemId ?? event.turnId ?? event.eventId}`),
+              messageId: MessageId.makeUnsafe(
+                `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
+              ),
               fallbackText: event.payload.detail,
             }
           : undefined;
@@ -956,6 +956,11 @@ const make = Effect.gen(function* () {
       if (assistantCompletion) {
         const assistantMessageId = assistantCompletion.messageId;
         const turnId = toTurnId(event.turnId);
+        const existingAssistantMessage = thread.messages.find(
+          (entry) => entry.id === assistantMessageId,
+        );
+        const shouldApplyFallbackCompletionText =
+          !existingAssistantMessage || existingAssistantMessage.text.length === 0;
         if (turnId) {
           yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
         }
@@ -968,7 +973,7 @@ const make = Effect.gen(function* () {
           createdAt: now,
           commandTag: "assistant-complete",
           finalDeltaCommandTag: "assistant-delta-finalize",
-          ...(assistantCompletion.fallbackText !== undefined
+          ...(assistantCompletion.fallbackText !== undefined && shouldApplyFallbackCompletionText
             ? { fallbackText: assistantCompletion.fallbackText }
             : {}),
         });
@@ -1030,9 +1035,7 @@ const make = Effect.gen(function* () {
 
         const shouldApplyRuntimeError = !STRICT_PROVIDER_LIFECYCLE_GUARD
           ? true
-          : activeTurnId === null ||
-            eventTurnId === undefined ||
-            sameId(activeTurnId, eventTurnId);
+          : activeTurnId === null || eventTurnId === undefined || sameId(activeTurnId, eventTurnId);
 
         if (shouldApplyRuntimeError) {
           yield* orchestrationEngine.dispatch({
