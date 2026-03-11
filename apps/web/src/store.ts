@@ -190,7 +190,7 @@ function toLegacyProvider(providerName: string | null): ProviderKind {
   if (providerName === "codex" || providerName === "claudeCode" || providerName === "cursor") {
     return providerName;
   }
-  return "codex";
+  return "claudeCode";
 }
 
 const CODEX_MODEL_SLUGS = new Set<string>(getModelOptions("codex").map((option) => option.slug));
@@ -234,7 +234,7 @@ function inferProviderForThreadModel(input: {
   ) {
     return "cursor";
   }
-  return input.model.trim().startsWith("claude-") ? "claudeCode" : "codex";
+  return "claudeCode";
 }
 
 function resolveWsHttpOrigin(): string {

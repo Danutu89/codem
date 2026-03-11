@@ -459,7 +459,7 @@ const makeUsageTracker = Effect.gen(function* () {
   let oauthPollingTimer: ReturnType<typeof setInterval> | null = null;
 
   /**
-   * Start background polling for OAuth usage data (every 2 minutes).
+   * Start background polling for OAuth usage data (every 5 minutes).
    * Only starts once, and only if the SDK hasn't already provided rate-limit windows.
    * Runs the initial fetch asynchronously to avoid blocking event processing.
    */
@@ -475,12 +475,12 @@ const makeUsageTracker = Effect.gen(function* () {
         pollOAuthUsage(provider).pipe(Effect.orElseSucceed(() => undefined)),
       ).catch(() => {});
 
-      // Then poll every 2 minutes using plain setInterval
+      // Then poll every 5 minutes using plain setInterval
       oauthPollingTimer = setInterval(() => {
         Effect.runPromise(
           pollOAuthUsage(provider).pipe(Effect.orElseSucceed(() => undefined)),
         ).catch(() => {});
-      }, 2 * 60 * 1000);
+      }, 5 * 60 * 1000);
     });
 
   const ingestTurnUsage: UsageTrackerShape["ingestTurnUsage"] = (provider, data) => {

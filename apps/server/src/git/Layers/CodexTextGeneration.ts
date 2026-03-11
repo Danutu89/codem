@@ -13,6 +13,7 @@ import {
   type BranchNameGenerationResult,
   type CommitMessageGenerationResult,
   type PrContentGenerationResult,
+  type ThreadTitleGenerationResult,
   type TextGenerationShape,
   TextGeneration,
 } from "../Services/TextGeneration.ts";
@@ -73,6 +74,17 @@ function limitSection(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
   const truncated = value.slice(0, maxChars);
   return `${truncated}\n\n[truncated]`;
+}
+
+function sanitizeThreadTitle(raw: string): string {
+  const singleLine = raw.trim().split(/\r?\n/g)[0]?.trim() ?? "";
+  if (singleLine.length === 0) {
+    return "New thread";
+  }
+  if (singleLine.length <= 50) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, 50).trimEnd()}...`;
 }
 
 function sanitizeCommitSubject(raw: string): string {
@@ -189,7 +201,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
     imagePaths = [],
     cleanupPaths = [],
   }: {
-    operation: "generateCommitMessage" | "generatePrContent" | "generateBranchName";
+    operation: "generateCommitMessage" | "generatePrContent" | "generateBranchName" | "generateThreadTitle";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -458,10 +470,43 @@ const makeCodexTextGeneration = Effect.gen(function* () {
     });
   };
 
+  const generateThreadTitle: TextGenerationShape["generateThreadTitle"] = (input) => {
+    const prompt = [
+      "You generate concise titles for coding conversation threads.",
+      "Return a JSON object with key: title.",
+      "Rules:",
+      "- Title should summarize the user's intent in a few words.",
+      "- Keep it short (under 50 characters).",
+      "- Use sentence case (capitalize only the first word and proper nouns).",
+      "- Do not use trailing punctuation.",
+      "- Be specific — avoid generic titles like 'Help with code'.",
+      "",
+      "User message:",
+      limitSection(input.message, 8_000),
+    ].join("\n");
+
+    return runCodexJson({
+      operation: "generateThreadTitle",
+      cwd: input.cwd,
+      prompt,
+      outputSchemaJson: Schema.Struct({
+        title: Schema.String,
+      }),
+    }).pipe(
+      Effect.map(
+        (generated) =>
+          ({
+            title: sanitizeThreadTitle(generated.title),
+          }) satisfies ThreadTitleGenerationResult,
+      ),
+    );
+  };
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
+    generateThreadTitle,
   } satisfies TextGenerationShape;
 });
 

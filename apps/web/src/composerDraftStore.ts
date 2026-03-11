@@ -407,7 +407,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     const provider = normalizeProviderKind(draftCandidate.provider);
     const model =
       typeof draftCandidate.model === "string"
-        ? normalizeModelSlug(draftCandidate.model, provider ?? "codex")
+        ? normalizeModelSlug(draftCandidate.model, provider ?? "claudeCode")
         : null;
     const runtimeMode =
       draftCandidate.runtimeMode === "approval-required" ||

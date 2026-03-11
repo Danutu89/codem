@@ -61,6 +61,7 @@ import { Open, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
 import { ActiveTextGenProvider } from "./git/Services/ActiveTextGenProvider.ts";
+import { TextGeneration } from "./git/Services/TextGeneration.ts";
 import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
 import {
   ATTACHMENTS_ROUTE_PREFIX,
@@ -221,6 +222,7 @@ export type ServerRuntimeServices =
   | GitManager
   | GitCore
   | ActiveTextGenProvider
+  | TextGeneration
   | TerminalManager
   | Keybindings
   | Open
@@ -262,6 +264,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const providerHealth = yield* ProviderHealth;
   const git = yield* GitCore;
   const activeTextGenProvider = yield* ActiveTextGenProvider;
+  const textGeneration = yield* TextGeneration;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
@@ -1075,6 +1078,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             }),
         });
         return {};
+      }
+
+      case WS_METHODS.aiGenerateThreadTitle: {
+        const body = stripRequestTag(request.body);
+        if (
+          body.provider === "codex" ||
+          body.provider === "claudeCode" ||
+          body.provider === "cursor"
+        ) {
+          yield* activeTextGenProvider.set(body.provider);
+        }
+        return yield* textGeneration.generateThreadTitle(body);
       }
 
       default: {

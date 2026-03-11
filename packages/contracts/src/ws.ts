@@ -34,6 +34,7 @@ import { KeybindingRule } from "./keybindings";
 import { ProjectListEntriesInput, ProjectReadFileInput, ProjectSearchEntriesInput, ProjectWriteFileInput } from "./project";
 import { OpenInEditorInput } from "./editor";
 import { BrowserTestRunInput } from "./browserTest";
+import { AiGenerateThreadTitleInput } from "./ai";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
@@ -78,6 +79,9 @@ export const WS_METHODS = {
   // Browser test
   browserTestRun: "browserTest.run",
   browserTestStop: "browserTest.stop",
+
+  // AI methods
+  aiGenerateThreadTitle: "ai.generateThreadTitle",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
@@ -150,6 +154,9 @@ const WebSocketRequestBody = Schema.Union([
   // Browser test
   tagRequestBody(WS_METHODS.browserTestRun, BrowserTestRunInput),
   tagRequestBody(WS_METHODS.browserTestStop, Schema.Struct({})),
+
+  // AI methods
+  tagRequestBody(WS_METHODS.aiGenerateThreadTitle, AiGenerateThreadTitleInput),
 ]);
 
 export const WebSocketRequest = Schema.Struct({

@@ -4,13 +4,11 @@ import { Suspense, lazy, type ReactNode, useCallback, useEffect } from "react";
 
 import ChatView from "../components/ChatView";
 import { useComposerDraftStore } from "../composerDraftStore";
-import { useFileBrowserStore } from "../fileBrowserStore";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useStore } from "../store";
 import { Sheet, SheetPopup } from "../components/ui/sheet";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
-import { FileBrowserPanel } from "../components/FileBrowserPanel";
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const DIFF_INLINE_LAYOUT_MEDIA_QUERY = "(max-width: 1180px)";
@@ -18,10 +16,6 @@ const DIFF_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_diff_sidebar_width";
 const DIFF_INLINE_DEFAULT_WIDTH = "clamp(28rem,48vw,44rem)";
 const DIFF_INLINE_SIDEBAR_MIN_WIDTH = 26 * 16;
 const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
-
-const FILE_BROWSER_SIDEBAR_WIDTH_STORAGE_KEY = "chat_file_browser_sidebar_width";
-const FILE_BROWSER_DEFAULT_WIDTH = "clamp(16rem,22vw,24rem)";
-const FILE_BROWSER_SIDEBAR_MIN_WIDTH = 14 * 16;
 
 const DiffPanelSheet = (props: {
   children: ReactNode;
@@ -154,41 +148,7 @@ const DiffPanelInlineSidebar = (props: {
   );
 };
 
-const FileBrowserInlineSidebar = (props: { cwd: string | null }) => {
-  const fileBrowserOpen = useFileBrowserStore((s) => s.isOpen);
-  const setFileBrowserOpen = useFileBrowserStore((s) => s.setOpen);
-  const onOpenChange = useCallback(
-    (open: boolean) => {
-      setFileBrowserOpen(open);
-    },
-    [setFileBrowserOpen],
-  );
-
-  return (
-    <SidebarProvider
-      defaultOpen={false}
-      open={fileBrowserOpen}
-      onOpenChange={onOpenChange}
-      className="w-auto min-h-0 flex-none bg-transparent"
-      style={{ "--sidebar-width": FILE_BROWSER_DEFAULT_WIDTH } as React.CSSProperties}
-    >
-      <Sidebar
-        side="right"
-        collapsible="offcanvas"
-        className="border-l border-border bg-card text-foreground"
-        resizable={{
-          minWidth: FILE_BROWSER_SIDEBAR_MIN_WIDTH,
-          storageKey: FILE_BROWSER_SIDEBAR_WIDTH_STORAGE_KEY,
-        }}
-      >
-        <FileBrowserPanel cwd={props.cwd} />
-        <SidebarRail />
-      </Sidebar>
-    </SidebarProvider>
-  );
-};
-
-/** Layout order: [ThreadsSidebar] [SidebarInset (chat)] [FileBrowser] [DiffPanel] */
+/** Layout order: [ThreadsSidebar] [SidebarInset (chat)] [DiffPanel] */
 
 function ChatThreadRouteView() {
   const threadsHydrated = useStore((store) => store.threadsHydrated);
@@ -202,12 +162,6 @@ function ChatThreadRouteView() {
     Object.hasOwn(store.draftThreadsByThreadId, threadId),
   );
   const routeThreadExists = threadExists || draftThreadExists;
-  const activeProjectCwd = useStore((store) => {
-    const thread = store.threads.find((t) => t.id === threadId);
-    if (!thread) return null;
-    const project = store.projects.find((p) => p.id === thread.projectId);
-    return thread.worktreePath ?? project?.cwd ?? null;
-  });
   const diffOpen = search.diff === "1";
   const shouldUseDiffSheet = useMediaQuery(DIFF_INLINE_LAYOUT_MEDIA_QUERY);
   const closeDiff = useCallback(() => {
@@ -251,7 +205,6 @@ function ChatThreadRouteView() {
         <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
           <ChatView key={threadId} threadId={threadId} />
         </SidebarInset>
-        <FileBrowserInlineSidebar cwd={activeProjectCwd} />
         <DiffPanelInlineSidebar diffOpen={diffOpen} onCloseDiff={closeDiff} onOpenDiff={openDiff} />
       </>
     );
@@ -262,7 +215,6 @@ function ChatThreadRouteView() {
       <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
         <ChatView key={threadId} threadId={threadId} />
       </SidebarInset>
-      <FileBrowserInlineSidebar cwd={activeProjectCwd} />
       <DiffPanelSheet diffOpen={diffOpen} onCloseDiff={closeDiff}>
         <Suspense fallback={<DiffLoadingFallback inline={false} />}>
           <DiffPanel mode="sheet" />

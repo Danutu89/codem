@@ -56,6 +56,7 @@ import type {
   BrowserTestProgress,
 } from "./browserTest";
 import type { ProviderUsageSnapshot } from "./usage";
+import type { AiGenerateThreadTitleInput, AiGenerateThreadTitleResult } from "./ai";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -187,5 +188,8 @@ export interface NativeApi {
   };
   usage: {
     onUsageUpdated: (callback: (snapshot: ProviderUsageSnapshot) => void) => () => void;
+  };
+  ai: {
+    generateThreadTitle: (input: AiGenerateThreadTitleInput) => Promise<AiGenerateThreadTitleResult>;
   };
 }

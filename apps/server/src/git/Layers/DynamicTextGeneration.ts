@@ -55,6 +55,8 @@ export const DynamicTextGenerationLive = Layer.effect(
         Effect.flatMap(resolveImpl(input.provider), (impl) => impl.generatePrContent(input)),
       generateBranchName: (input) =>
         Effect.flatMap(resolveImpl(input.provider), (impl) => impl.generateBranchName(input)),
+      generateThreadTitle: (input) =>
+        Effect.flatMap(resolveImpl(input.provider), (impl) => impl.generateThreadTitle(input)),
     } satisfies TextGenerationShape;
   }),
 );

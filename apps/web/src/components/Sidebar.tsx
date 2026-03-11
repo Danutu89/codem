@@ -5,10 +5,12 @@ import {
   GitPullRequestIcon,
   PlusIcon,
   RocketIcon,
+  SearchIcon,
   SettingsIcon,
   SquarePenIcon,
   TerminalIcon,
   TriangleAlertIcon,
+  XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
@@ -407,6 +409,8 @@ export default function Sidebar() {
   >(() => new Set());
   const renamingCommittedRef = useRef(false);
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
+  const [projectSearchQuery, setProjectSearchQuery] = useState("");
+  const projectSearchInputRef = useRef<HTMLInputElement | null>(null);
   const dragInProgressRef = useRef(false);
   const suppressProjectClickAfterDragRef = useRef(false);
   const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
@@ -432,6 +436,51 @@ export default function Sidebar() {
     }
     return map;
   }, [threads]);
+  // Compute the most recent activity timestamp for each thread (for sorting)
+  const threadLatestActivityTime = useMemo(() => {
+    const map = new Map<ThreadId, number>();
+    for (const thread of threads) {
+      const completedAt = thread.latestTurn?.completedAt;
+      const requestedAt = thread.latestTurn?.requestedAt;
+      const activityTime = Math.max(
+        completedAt ? new Date(completedAt).getTime() : 0,
+        requestedAt ? new Date(requestedAt).getTime() : 0,
+        new Date(thread.createdAt).getTime(),
+      );
+      map.set(thread.id, activityTime);
+    }
+    return map;
+  }, [threads]);
+
+  // Compute the most recent thread activity per project (for sorting projects)
+  const projectLatestActivityTime = useMemo(() => {
+    const map = new Map<ProjectId, number>();
+    for (const thread of threads) {
+      const threadTime = threadLatestActivityTime.get(thread.id) ?? 0;
+      const current = map.get(thread.projectId) ?? 0;
+      if (threadTime > current) {
+        map.set(thread.projectId, threadTime);
+      }
+    }
+    return map;
+  }, [threads, threadLatestActivityTime]);
+
+  // Sort projects by most recent thread activity, then filter by search
+  const sortedFilteredProjects = useMemo(() => {
+    const sorted = [...projects].sort((a, b) => {
+      const aTime = projectLatestActivityTime.get(a.id) ?? 0;
+      const bTime = projectLatestActivityTime.get(b.id) ?? 0;
+      return bTime - aTime;
+    });
+    if (!projectSearchQuery.trim()) return sorted;
+    const query = projectSearchQuery.trim().toLowerCase();
+    return sorted.filter(
+      (project) =>
+        project.name.toLowerCase().includes(query) ||
+        project.cwd.toLowerCase().includes(query),
+    );
+  }, [projects, projectLatestActivityTime, projectSearchQuery]);
+
   const projectCwdById = useMemo(
     () => new Map(projects.map((project) => [project.id, project.cwd] as const)),
     [projects],
@@ -585,8 +634,9 @@ export default function Sidebar() {
       const latestThread = threads
         .filter((thread) => thread.projectId === projectId)
         .toSorted((a, b) => {
-          const byDate = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-          if (byDate !== 0) return byDate;
+          const aTime = threadLatestActivityTime.get(a.id) ?? 0;
+          const bTime = threadLatestActivityTime.get(b.id) ?? 0;
+          if (bTime !== aTime) return bTime - aTime;
           return b.id.localeCompare(a.id);
         })[0];
       if (!latestThread) return;
@@ -596,7 +646,7 @@ export default function Sidebar() {
         params: { threadId: latestThread.id },
       });
     },
-    [navigate, threads],
+    [navigate, threads, threadLatestActivityTime],
   );
 
   const addProjectFromPath = useCallback(
@@ -631,7 +681,7 @@ export default function Sidebar() {
           projectId,
           title,
           workspaceRoot: cwd,
-          defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
+          defaultModel: DEFAULT_MODEL_BY_PROVIDER.claudeCode,
           createdAt,
         });
         await handleNewThread(projectId).catch(() => undefined);
@@ -1442,6 +1492,41 @@ export default function Sidebar() {
             </Tooltip>
           </div>
 
+          {/* Project search */}
+          {projects.length > 1 && (
+            <div className="mb-1.5 px-1">
+              <div className="relative">
+                <SearchIcon className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground/50" />
+                <input
+                  ref={projectSearchInputRef}
+                  className="w-full rounded-md border border-border bg-secondary py-1 pl-7 pr-7 text-xs text-foreground placeholder:text-muted-foreground/40 focus:border-ring focus:outline-none"
+                  placeholder="Search projects..."
+                  value={projectSearchQuery}
+                  onChange={(event) => setProjectSearchQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      setProjectSearchQuery("");
+                      projectSearchInputRef.current?.blur();
+                    }
+                  }}
+                />
+                {projectSearchQuery && (
+                  <button
+                    type="button"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground/50 hover:text-muted-foreground"
+                    onClick={() => {
+                      setProjectSearchQuery("");
+                      projectSearchInputRef.current?.focus();
+                    }}
+                    aria-label="Clear search"
+                  >
+                    <XIcon className="size-3" />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {shouldShowProjectPathEntry && (
             <div className="mb-2 px-1">
               {isElectron && (
@@ -1517,16 +1602,16 @@ export default function Sidebar() {
           >
             <SidebarMenu>
               <SortableContext
-                items={projects.map((project) => project.id)}
+                items={sortedFilteredProjects.map((project) => project.id)}
                 strategy={verticalListSortingStrategy}
               >
-                {projects.map((project) => {
+                {sortedFilteredProjects.map((project) => {
                   const projectThreads = threads
                     .filter((thread) => thread.projectId === project.id)
                     .toSorted((a, b) => {
-                      const byDate =
-                        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-                      if (byDate !== 0) return byDate;
+                      const aTime = threadLatestActivityTime.get(a.id) ?? 0;
+                      const bTime = threadLatestActivityTime.get(b.id) ?? 0;
+                      if (bTime !== aTime) return bTime - aTime;
                       return b.id.localeCompare(a.id);
                     });
                   const isThreadListExpanded = expandedThreadListsByProject.has(project.id);
@@ -1829,6 +1914,11 @@ export default function Sidebar() {
           {projects.length === 0 && !shouldShowProjectPathEntry && (
             <div className="px-2 pt-4 text-center text-xs text-muted-foreground/60">
               No projects yet
+            </div>
+          )}
+          {projects.length > 0 && sortedFilteredProjects.length === 0 && projectSearchQuery && (
+            <div className="px-2 pt-2 text-center text-xs text-muted-foreground/60">
+              No matching projects
             </div>
           )}
         </SidebarGroup>

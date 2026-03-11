@@ -18,6 +18,7 @@ import {
   type BranchNameGenerationResult,
   type CommitMessageGenerationResult,
   type PrContentGenerationResult,
+  type ThreadTitleGenerationResult,
   type TextGenerationShape,
 } from "../Services/TextGeneration.ts";
 import { ClaudeTextGenerationTag } from "../Services/TextGenerationTags.ts";
@@ -64,6 +65,17 @@ function sanitizeCommitSubject(raw: string): string {
   return withoutTrailingPeriod.slice(0, 72).trimEnd();
 }
 
+function sanitizeThreadTitle(raw: string): string {
+  const singleLine = raw.trim().split(/\r?\n/g)[0]?.trim() ?? "";
+  if (singleLine.length === 0) {
+    return "New thread";
+  }
+  if (singleLine.length <= 50) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, 50).trimEnd()}...`;
+}
+
 function sanitizePrTitle(raw: string): string {
   const singleLine = raw.trim().split(/\r?\n/g)[0]?.trim() ?? "";
   if (singleLine.length > 0) {
@@ -83,7 +95,7 @@ function runClaudeJson<S extends Schema.Top & { readonly DecodingServices: never
   prompt,
   outputSchemaJson,
 }: {
-  operation: "generateCommitMessage" | "generatePrContent" | "generateBranchName";
+  operation: "generateCommitMessage" | "generatePrContent" | "generateBranchName" | "generateThreadTitle";
   cwd: string;
   prompt: string;
   outputSchemaJson: S;
@@ -348,6 +360,37 @@ const makeClaudeTextGeneration = Effect.succeed({
           ({
             branch: sanitizeBranchFragment(generated.branch),
           }) satisfies BranchNameGenerationResult,
+      ),
+    );
+  },
+  generateThreadTitle: (input) => {
+    const prompt = [
+      "You generate concise titles for coding conversation threads.",
+      "Return a JSON object with key: title.",
+      "Rules:",
+      "- Title should summarize the user's intent in a few words.",
+      "- Keep it short (under 50 characters).",
+      "- Use sentence case (capitalize only the first word and proper nouns).",
+      "- Do not use trailing punctuation.",
+      "- Be specific — avoid generic titles like 'Help with code'.",
+      "",
+      "User message:",
+      limitSection(input.message, 8_000),
+    ].join("\n");
+
+    return runClaudeJson({
+      operation: "generateThreadTitle",
+      cwd: input.cwd,
+      prompt,
+      outputSchemaJson: Schema.Struct({
+        title: Schema.String,
+      }),
+    }).pipe(
+      Effect.map(
+        (generated) =>
+          ({
+            title: sanitizeThreadTitle(generated.title),
+          }) satisfies ThreadTitleGenerationResult,
       ),
     );
   },

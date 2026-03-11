@@ -129,6 +129,69 @@ function resolvePathDelimiter(platform: NodeJS.Platform): string {
   return platform === "win32" ? ";" : ":";
 }
 
+/**
+ * Well-known installation paths for editors that may not be on the system PATH.
+ * GUI-launched processes on macOS don't inherit shell profile additions,
+ * so we check these locations as a fallback.
+ */
+function resolveWellKnownEditorPaths(
+  command: string,
+  platform: NodeJS.Platform,
+): ReadonlyArray<string> {
+  if (platform === "darwin") {
+    const home = process.env.HOME ?? "";
+    switch (command) {
+      case "code":
+        return [
+          "/Applications/Visual Studio Code.app/Contents/Resources/app/bin",
+          `${home}/Applications/Visual Studio Code.app/Contents/Resources/app/bin`,
+          "/usr/local/bin",
+          "/opt/homebrew/bin",
+        ];
+      case "cursor":
+        return [
+          "/Applications/Cursor.app/Contents/Resources/app/bin",
+          `${home}/Applications/Cursor.app/Contents/Resources/app/bin`,
+          "/usr/local/bin",
+          "/opt/homebrew/bin",
+        ];
+      case "zed":
+        return [
+          "/Applications/Zed.app/Contents/MacOS",
+          `${home}/Applications/Zed.app/Contents/MacOS`,
+          "/usr/local/bin",
+          "/opt/homebrew/bin",
+        ];
+      default:
+        return [];
+    }
+  }
+
+  if (platform === "linux") {
+    return ["/usr/local/bin", "/usr/bin", "/snap/bin"];
+  }
+
+  if (platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA ?? "";
+    const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
+    switch (command) {
+      case "code":
+        return [
+          `${localAppData}\\Programs\\Microsoft VS Code\\bin`,
+          `${programFiles}\\Microsoft VS Code\\bin`,
+        ];
+      case "cursor":
+        return [
+          `${localAppData}\\Programs\\Cursor\\resources\\app\\bin`,
+        ];
+      default:
+        return [];
+    }
+  }
+
+  return [];
+}
+
 export function isCommandAvailable(
   command: string,
   options: CommandAvailabilityOptions = {},
@@ -158,6 +221,21 @@ export function isCommandAvailable(
       }
     }
   }
+
+  // Check well-known editor installation paths as fallback.
+  // GUI-launched processes (e.g. Electron apps) on macOS don't inherit
+  // shell profile PATH additions, so editors may not be found on PATH
+  // even though they work fine in the user's terminal.
+  const wellKnownPaths = resolveWellKnownEditorPaths(command, platform);
+  for (const fallbackPath of wellKnownPaths) {
+    if (pathEntries.includes(fallbackPath)) continue; // already checked
+    for (const candidate of commandCandidates) {
+      if (isExecutableFile(join(fallbackPath, candidate), platform, windowsPathExtensions)) {
+        return true;
+      }
+    }
+  }
+
   return false;
 }
 

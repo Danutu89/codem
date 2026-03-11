@@ -224,6 +224,9 @@ export function createWsNativeApi(): NativeApi {
           if (payload) callback(payload);
         }),
     },
+    ai: {
+      generateThreadTitle: (input) => transport.request(WS_METHODS.aiGenerateThreadTitle, input),
+    },
   };
 
   instance = { api, transport };

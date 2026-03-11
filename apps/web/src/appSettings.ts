@@ -60,7 +60,7 @@ let cachedSnapshot: AppSettings = DEFAULT_APP_SETTINGS;
 
 export function normalizeCustomModelSlugs(
   models: Iterable<string | null | undefined>,
-  provider: ProviderKind = "codex",
+  provider: ProviderKind = "claudeCode",
 ): string[] {
   const normalizedModels: string[] = [];
   const seen = new Set<string>();

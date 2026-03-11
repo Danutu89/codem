@@ -93,7 +93,6 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
 import { useStore } from "../store";
-import { useFileBrowserStore } from "../fileBrowserStore";
 import {
   buildCollapsedProposedPlanPreviewMarkdown,
   buildPlanImplementationThreadTitle,
@@ -152,7 +151,6 @@ import {
   CircleIcon,
   FileIcon,
   FolderIcon,
-  FolderOpenIcon,
   DiffIcon,
   EllipsisIcon,
   FolderClosedIcon,
@@ -819,6 +817,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
   // When set, the thread-change reset effect will open the sidebar instead of closing it.
   // Used by "Implement in new thread" to carry the sidebar-open intent across navigation.
   const planSidebarOpenOnNextThreadRef = useRef(false);
+  // Persists the last approved plan markdown so the sidebar can keep showing it.
+  const [lastApprovedPlanMarkdown, setLastApprovedPlanMarkdown] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [terminalFocusRequestId, setTerminalFocusRequestId] = useState(0);
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
@@ -1037,7 +1037,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const lockedProvider: ProviderKind | null = hasThreadStarted
     ? (sessionProvider ?? selectedProviderByThreadId ?? null)
     : null;
-  const selectedProvider: ProviderKind = lockedProvider ?? selectedProviderByThreadId ?? "codex";
+  const selectedProvider: ProviderKind = lockedProvider ?? selectedProviderByThreadId ?? "claudeCode";
   const cursorModelSelectionLockedReason =
     hasThreadStarted && selectedProvider === "cursor"
       ? "Cursor currently does not support changing models after the first message in a thread."
@@ -1230,6 +1230,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
     latestTurnSettled &&
     activeProposedPlan !== null;
   const activePendingApproval = pendingApprovals[0] ?? null;
+  // Extract the pending plan approval (if any) for the sidebar, and filter it
+  // out of the approvals that render as overlay cards.
+  const pendingPlanApproval = useMemo(
+    () => pendingApprovals.find((a) => a.requestKind === "plan") ?? null,
+    [pendingApprovals],
+  );
+  const nonPlanPendingApprovals = useMemo(
+    () => pendingApprovals.filter((a) => a.requestKind !== "plan"),
+    [pendingApprovals],
+  );
   const isComposerApprovalState = activePendingApproval !== null;
   const hasComposerHeader =
     isComposerApprovalState ||
@@ -1565,7 +1575,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const keybindings = serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
   const availableEditors = serverConfigQuery.data?.availableEditors ?? EMPTY_AVAILABLE_EDITORS;
   const providerStatuses = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
-  const activeProvider = activeThread?.session?.provider ?? "codex";
+  const activeProvider = activeThread?.session?.provider ?? "claudeCode";
   const activeProviderStatus = useMemo(
     () => providerStatuses.find((status) => status.provider === activeProvider) ?? null,
     [activeProvider, providerStatuses],
@@ -1599,15 +1609,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
     () => shortcutLabelForCommand(keybindings, "diff.toggle"),
     [keybindings],
   );
-  const fileBrowserShortcutLabel = useMemo(
-    () => shortcutLabelForCommand(keybindings, "fileBrowser.toggle"),
-    [keybindings],
-  );
-  const fileBrowserOpen = useFileBrowserStore((s) => s.isOpen);
-  const fileBrowserToggle = useFileBrowserStore((s) => s.toggle);
-  const onToggleFileBrowser = useCallback(() => {
-    fileBrowserToggle();
-  }, [fileBrowserToggle]);
   const onToggleDiff = useCallback(() => {
     void navigate({
       to: "/$threadId",
@@ -2025,6 +2026,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
     setPlanSidebarOpen(true);
   }, [activeProposedPlan]);
 
+  // Auto-open plan sidebar when a plan approval is pending
+  useEffect(() => {
+    if (!pendingPlanApproval) return;
+    setPlanSidebarOpen(true);
+  }, [pendingPlanApproval]);
+
   const persistThreadSettingsForNextTurn = useCallback(
     async (input: {
       threadId: ThreadId;
@@ -2293,7 +2300,26 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setPlanSidebarOpen(false);
     }
     planSidebarDismissedForTurnRef.current = null;
+    setLastApprovedPlanMarkdown(null);
   }, [activeThread?.id]);
+
+  // Seed lastApprovedPlanMarkdown from the thread's persisted proposed plans
+  // so the plan sidebar button stays visible and the plan content is available
+  // after an app restart. This runs separately from the thread-change effect
+  // because proposedPlans may arrive asynchronously from the server.
+  useEffect(() => {
+    const threadProposedPlans = activeThread?.proposedPlans ?? [];
+    if (threadProposedPlans.length > 0 && !lastApprovedPlanMarkdown) {
+      const latestPlan = [...threadProposedPlans]
+        .toSorted(
+          (a, b) => a.updatedAt.localeCompare(b.updatedAt) || a.id.localeCompare(b.id),
+        )
+        .at(-1);
+      if (latestPlan?.planMarkdown) {
+        setLastApprovedPlanMarkdown(latestPlan.planMarkdown);
+      }
+    }
+  }, [activeThread?.proposedPlans, lastApprovedPlanMarkdown]);
 
   useEffect(() => {
     if (!composerMenuOpen) {
@@ -2619,12 +2645,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
         return;
       }
 
-      if (command === "fileBrowser.toggle") {
-        event.preventDefault();
-        event.stopPropagation();
-        onToggleFileBrowser();
-        return;
-      }
 
       const scriptId = projectScriptIdFromCommand(command);
       if (!scriptId || !activeProject) return;
@@ -2648,7 +2668,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
     splitTerminal,
     keybindings,
     onToggleDiff,
-    onToggleFileBrowser,
     toggleTerminalVisibility,
   ]);
 
@@ -2992,13 +3011,38 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
 
       // Auto-title from first message
-      if (isFirstMessage && isServerThread) {
-        await api.orchestration.dispatchCommand({
-          type: "thread.meta.update",
-          commandId: newCommandId(),
-          threadId: threadIdForSend,
-          title,
-        });
+      if (isFirstMessage && (isServerThread || createdServerThreadForLocalDraft)) {
+        if (isServerThread) {
+          await api.orchestration.dispatchCommand({
+            type: "thread.meta.update",
+            commandId: newCommandId(),
+            threadId: threadIdForSend,
+            title,
+          });
+        }
+
+        // Fire async AI title generation in the background
+        if (trimmed && activeProject.cwd) {
+          void api.ai
+            .generateThreadTitle({
+              cwd: activeProject.cwd,
+              message: trimmed,
+              provider: activeProvider,
+            })
+            .then((result) => {
+              if (result.title) {
+                void api.orchestration.dispatchCommand({
+                  type: "thread.meta.update",
+                  commandId: newCommandId(),
+                  threadId: threadIdForSend,
+                  title: result.title,
+                });
+              }
+            })
+            .catch(() => {
+              // Silently keep the truncated title on failure
+            });
+        }
       }
 
       if (isServerThread) {
@@ -3100,13 +3144,18 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
       // When a plan approval is accepted, switch out of plan mode so the
       // model can proceed with implementation in the same turn.
+      // Also persist the approved plan markdown for continued sidebar display.
+      const matchedPlanApproval = pendingApprovals.find(
+        (a) => a.requestId === requestId && a.requestKind === "plan",
+      );
       if (
         (decision === "accept" || decision === "acceptForSession") &&
-        pendingApprovals.some(
-          (a) => a.requestId === requestId && a.requestKind === "plan",
-        )
+        matchedPlanApproval
       ) {
         handleInteractionModeChange("default");
+        if (matchedPlanApproval.detail) {
+          setLastApprovedPlanMarkdown(matchedPlanApproval.detail);
+        }
       }
 
       setRespondingRequestIds((existing) =>
@@ -3868,10 +3917,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
           keybindings={keybindings}
           availableEditors={availableEditors}
           diffToggleShortcutLabel={diffPanelShortcutLabel}
-          fileBrowserToggleShortcutLabel={fileBrowserShortcutLabel}
           gitCwd={gitCwd}
           diffOpen={diffOpen}
-          fileBrowserOpen={fileBrowserOpen}
           onRunProjectScript={(script) => {
             void runProjectScript(script);
           }}
@@ -3879,7 +3926,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
           onToggleDiff={onToggleDiff}
-          onToggleFileBrowser={onToggleFileBrowser}
         />
       </header>
 
@@ -3894,9 +3940,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
         {/* Chat column */}
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           <PlanModePanel activePlan={activePlan} />
-          {/* Approval cards overlay */}
+          {/* Approval cards overlay — plan approvals are handled by the sidebar */}
           <PendingApprovalsPanel
-            pendingApprovals={pendingApprovals}
+            pendingApprovals={nonPlanPendingApprovals}
             respondingRequestIds={respondingRequestIds}
             onRespondToApproval={onRespondToApproval}
           />
@@ -4121,7 +4167,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
                       {isComposerFooterCompact ? (
                         <CompactComposerControlsMenu
-                          activePlan={Boolean(activePlan || activeProposedPlan || planSidebarOpen)}
+                          activePlan={Boolean(activePlan || activeProposedPlan || pendingPlanApproval || lastApprovedPlanMarkdown || planSidebarOpen)}
                           interactionMode={interactionMode}
                           planSidebarOpen={planSidebarOpen}
                           runtimeMode={runtimeMode}
@@ -4203,7 +4249,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                             </span>
                           </Button>
 
-                          {activePlan || activeProposedPlan || planSidebarOpen ? (
+                          {activePlan || activeProposedPlan || pendingPlanApproval || lastApprovedPlanMarkdown || planSidebarOpen ? (
                             <>
                               <Separator
                                 orientation="vertical"
@@ -4434,6 +4480,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
             activeProposedPlan={activeProposedPlan}
             markdownCwd={gitCwd ?? undefined}
             workspaceRoot={activeProject?.cwd ?? undefined}
+            pendingPlanApproval={pendingPlanApproval}
+            isRespondingToApproval={
+              pendingPlanApproval
+                ? respondingRequestIds.includes(pendingPlanApproval.requestId)
+                : false
+            }
+            onRespondToApproval={onRespondToApproval}
+            lastApprovedPlanMarkdown={lastApprovedPlanMarkdown}
             onClose={() => {
               setPlanSidebarOpen(false);
               // Track that the user explicitly dismissed for this turn so auto-open won't fight them.
@@ -4558,16 +4612,13 @@ interface ChatHeaderProps {
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   diffToggleShortcutLabel: string | null;
-  fileBrowserToggleShortcutLabel: string | null;
   gitCwd: string | null;
   diffOpen: boolean;
-  fileBrowserOpen: boolean;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
   onToggleDiff: () => void;
-  onToggleFileBrowser: () => void;
 }
 
 const ChatHeader = memo(function ChatHeader({
@@ -4581,16 +4632,13 @@ const ChatHeader = memo(function ChatHeader({
   keybindings,
   availableEditors,
   diffToggleShortcutLabel,
-  fileBrowserToggleShortcutLabel,
   gitCwd,
   diffOpen,
-  fileBrowserOpen,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
   onDeleteProjectScript,
   onToggleDiff,
-  onToggleFileBrowser,
 }: ChatHeaderProps) {
   return (
     <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -4633,29 +4681,6 @@ const ChatHeader = memo(function ChatHeader({
           />
         )}
         {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} activeProvider={selectedProvider} />}
-        {activeProjectName && (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Toggle
-                  className="shrink-0"
-                  pressed={fileBrowserOpen}
-                  onPressedChange={onToggleFileBrowser}
-                  aria-label="Toggle file browser"
-                  variant="outline"
-                  size="xs"
-                >
-                  <FolderOpenIcon className="size-3" />
-                </Toggle>
-              }
-            />
-            <TooltipPopup side="bottom">
-              {fileBrowserToggleShortcutLabel
-                ? `Toggle file browser (${fileBrowserToggleShortcutLabel})`
-                : "Toggle file browser"}
-            </TooltipPopup>
-          </Tooltip>
-        )}
         <Tooltip>
           <TooltipTrigger
             render={
@@ -4746,133 +4771,8 @@ const ProviderHealthBanner = memo(function ProviderHealthBanner({
   );
 });
 
-// Dedicated card for ExitPlanMode plan approval — shows the full plan with
-// expand/collapse, a textarea for multi-line feedback, and clear action buttons.
-const PlanApprovalCard = memo(function PlanApprovalCard({
-  approval,
-  isResponding,
-  onRespondToApproval,
-}: {
-  approval: PendingApproval;
-  isResponding: boolean;
-  onRespondToApproval: (
-    requestId: ApprovalRequestId,
-    decision: ProviderApprovalDecision,
-    detail?: string,
-  ) => Promise<void>;
-}) {
-  const [feedback, setFeedback] = useState("");
-  const [expanded, setExpanded] = useState(false);
-  const planMarkdown = approval.detail ?? "";
-  const lineCount = planMarkdown.split("\n").length;
-  const canCollapse = planMarkdown.length > 600 || lineCount > 15;
-
-  const handleRequestChanges = () => {
-    if (!feedback.trim()) return;
-    void onRespondToApproval(approval.requestId, "decline", feedback.trim());
-  };
-
-  return (
-    <div className="rounded-xl border border-border bg-card p-4 sm:p-5 shadow-xs">
-      {/* Header */}
-      <div className="flex flex-wrap items-center gap-2 mb-4">
-        <Badge variant="secondary">Plan ready</Badge>
-        <span className="text-xs text-muted-foreground">
-          Review and approve, request changes, or decline
-        </span>
-      </div>
-
-      {/* Plan content */}
-      {planMarkdown ? (
-        <>
-          <div
-            className={cn(
-              "relative rounded-lg border border-border/60 bg-muted/20 px-4 py-3 mb-1",
-              canCollapse && !expanded
-                ? "max-h-72 overflow-hidden"
-                : expanded
-                  ? "max-h-[70vh] overflow-y-auto"
-                  : "",
-            )}
-          >
-            <ChatMarkdown text={planMarkdown} cwd={undefined} isStreaming={false} />
-            {canCollapse && !expanded && (
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-muted/20 to-transparent" />
-            )}
-          </div>
-          {canCollapse && (
-            <div className="flex justify-center mb-3">
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() => setExpanded((v) => !v)}
-              >
-                {expanded ? "Show less" : "Show full plan"}
-              </Button>
-            </div>
-          )}
-        </>
-      ) : null}
-
-      {/* Feedback textarea */}
-      <div className="mb-4">
-        <label className="block mb-1.5 text-xs font-medium text-muted-foreground">
-          Suggest changes{" "}
-          <span className="font-normal opacity-60">(optional — press ⌘↵ to send)</span>
-        </label>
-        <Textarea
-          size="sm"
-          placeholder="Describe what you'd like changed about this plan…"
-          value={feedback}
-          disabled={isResponding}
-          onChange={(e) => setFeedback(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && feedback.trim()) {
-              handleRequestChanges();
-            }
-          }}
-        />
-      </div>
-
-      {/* Action buttons */}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          size="sm"
-          variant="default"
-          disabled={isResponding}
-          onClick={() => void onRespondToApproval(approval.requestId, "accept")}
-        >
-          Approve plan
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={isResponding || !feedback.trim()}
-          onClick={handleRequestChanges}
-          title={!feedback.trim() ? "Type feedback above to request changes" : undefined}
-        >
-          Request changes
-        </Button>
-        <Button
-          size="sm"
-          variant="destructive-outline"
-          disabled={isResponding}
-          onClick={() => void onRespondToApproval(approval.requestId, "decline")}
-        >
-          Decline
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={isResponding}
-          onClick={() => void onRespondToApproval(approval.requestId, "cancel")}
-        >
-          Cancel turn
-        </Button>
-      </div>
-    </div>
-  );
-});
+// PlanApprovalCard has been removed — plan approvals are now handled
+// entirely within the PlanSidebar component.
 
 interface PendingApprovalsPanelProps {
   pendingApprovals: PendingApproval[];
@@ -4895,19 +4795,8 @@ const PendingApprovalsPanel = memo(function PendingApprovalsPanel({
       <div className="mx-auto max-w-3xl space-y-2">
       {pendingApprovals.map((approval) => {
         const isResponding = respondingRequestIds.includes(approval.requestId);
-        const isPlan = approval.requestKind === "plan";
 
-        // Plan approvals (ExitPlanMode) get a dedicated full-featured card
-        if (isPlan) {
-          return (
-            <PlanApprovalCard
-              key={approval.requestId}
-              approval={approval}
-              isResponding={isResponding}
-              onRespondToApproval={onRespondToApproval}
-            />
-          );
-        }
+        // Plan approvals are now handled by the PlanSidebar — skip them here.
 
         // Specialized approval cards per tool/request kind
         if (approval.requestKind === "command") {

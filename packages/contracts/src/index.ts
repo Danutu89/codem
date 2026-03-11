@@ -13,3 +13,4 @@ export * from "./editor";
 export * from "./project";
 export * from "./browserTest";
 export * from "./usage";
+export * from "./ai";
