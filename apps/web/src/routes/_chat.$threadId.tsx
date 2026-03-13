@@ -7,10 +7,12 @@ import { useComposerDraftStore } from "../composerDraftStore";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useStore } from "../store";
+import { useLiveBrowserStore } from "../liveBrowserStore";
 import { Sheet, SheetPopup } from "../components/ui/sheet";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
+const LiveBrowserPanel = lazy(() => import("../components/LiveBrowserPanel"));
 const DIFF_INLINE_LAYOUT_MEDIA_QUERY = "(max-width: 1180px)";
 const DIFF_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_diff_sidebar_width";
 const DIFF_INLINE_DEFAULT_WIDTH = "clamp(28rem,48vw,44rem)";
@@ -148,7 +150,52 @@ const DiffPanelInlineSidebar = (props: {
   );
 };
 
-/** Layout order: [ThreadsSidebar] [SidebarInset (chat)] [DiffPanel] */
+/** Layout order: [ThreadsSidebar] [SidebarInset (chat)] [DiffPanel | LiveBrowserPanel] */
+
+const LIVE_BROWSER_SIDEBAR_WIDTH_STORAGE_KEY = "chat_live_browser_sidebar_width";
+const LIVE_BROWSER_DEFAULT_WIDTH = "clamp(28rem,48vw,44rem)";
+const LIVE_BROWSER_SIDEBAR_MIN_WIDTH = 24 * 16;
+
+const LiveBrowserInlineSidebar = (props: {
+  browserOpen: boolean;
+  onCloseBrowser: () => void;
+  threadId: string;
+}) => {
+  const { browserOpen, onCloseBrowser, threadId } = props;
+
+  return (
+    <SidebarProvider
+      defaultOpen={false}
+      open={browserOpen}
+      onOpenChange={(open) => {
+        if (!open) onCloseBrowser();
+      }}
+      className="w-auto min-h-0 flex-none bg-transparent"
+      style={{ "--sidebar-width": LIVE_BROWSER_DEFAULT_WIDTH } as React.CSSProperties}
+    >
+      <Sidebar
+        side="right"
+        collapsible="offcanvas"
+        className="border-l border-border bg-card text-foreground"
+        resizable={{
+          minWidth: LIVE_BROWSER_SIDEBAR_MIN_WIDTH,
+          storageKey: LIVE_BROWSER_SIDEBAR_WIDTH_STORAGE_KEY,
+        }}
+      >
+        <Suspense
+          fallback={
+            <div className="flex h-full min-h-0 items-center justify-center px-4 text-center text-xs text-muted-foreground/70">
+              Loading browser...
+            </div>
+          }
+        >
+          <LiveBrowserPanel onClose={onCloseBrowser} threadId={threadId} />
+        </Suspense>
+        <SidebarRail />
+      </Sidebar>
+    </SidebarProvider>
+  );
+};
 
 function ChatThreadRouteView() {
   const threadsHydrated = useStore((store) => store.threadsHydrated);
@@ -163,7 +210,10 @@ function ChatThreadRouteView() {
   );
   const routeThreadExists = threadExists || draftThreadExists;
   const diffOpen = search.diff === "1";
+  const browserOpen = search.browser === "1";
+  const liveBrowserAvailable = useLiveBrowserStore((s) => s.isAvailable);
   const shouldUseDiffSheet = useMediaQuery(DIFF_INLINE_LAYOUT_MEDIA_QUERY);
+
   const closeDiff = useCallback(() => {
     void navigate({
       to: "/$threadId",
@@ -184,6 +234,16 @@ function ChatThreadRouteView() {
     });
   }, [navigate, threadId]);
 
+  const closeBrowser = useCallback(() => {
+    void navigate({
+      to: "/$threadId",
+      params: { threadId },
+      search: (previous) => {
+        return stripDiffSearchParams(previous);
+      },
+    });
+  }, [navigate, threadId]);
+
   useEffect(() => {
     if (!threadsHydrated) {
       return;
@@ -199,13 +259,24 @@ function ChatThreadRouteView() {
     return null;
   }
 
+  // Live Browser and Diff panel are mutually exclusive; browser takes priority
+  const showBrowser = browserOpen && liveBrowserAvailable;
+
   if (!shouldUseDiffSheet) {
     return (
       <>
         <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
           <ChatView key={threadId} threadId={threadId} />
         </SidebarInset>
-        <DiffPanelInlineSidebar diffOpen={diffOpen} onCloseDiff={closeDiff} onOpenDiff={openDiff} />
+        {showBrowser ? (
+          <LiveBrowserInlineSidebar
+            browserOpen={browserOpen}
+            onCloseBrowser={closeBrowser}
+            threadId={threadId}
+          />
+        ) : (
+          <DiffPanelInlineSidebar diffOpen={diffOpen} onCloseDiff={closeDiff} onOpenDiff={openDiff} />
+        )}
       </>
     );
   }
@@ -215,11 +286,19 @@ function ChatThreadRouteView() {
       <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
         <ChatView key={threadId} threadId={threadId} />
       </SidebarInset>
-      <DiffPanelSheet diffOpen={diffOpen} onCloseDiff={closeDiff}>
-        <Suspense fallback={<DiffLoadingFallback inline={false} />}>
-          <DiffPanel mode="sheet" />
-        </Suspense>
-      </DiffPanelSheet>
+      {showBrowser ? (
+        <LiveBrowserInlineSidebar
+          browserOpen={browserOpen}
+          onCloseBrowser={closeBrowser}
+          threadId={threadId}
+        />
+      ) : (
+        <DiffPanelSheet diffOpen={diffOpen} onCloseDiff={closeDiff}>
+          <Suspense fallback={<DiffLoadingFallback inline={false} />}>
+            <DiffPanel mode="sheet" />
+          </Suspense>
+        </DiffPanelSheet>
+      )}
     </>
   );
 }

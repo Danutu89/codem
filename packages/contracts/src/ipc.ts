@@ -55,6 +55,11 @@ import type {
   BrowserTestResult,
   BrowserTestProgress,
 } from "./browserTest";
+import type {
+  LiveBrowserInspectResult,
+  LiveBrowserState,
+  LiveBrowserElementScreenshot,
+} from "./liveBrowser";
 import type { ProviderUsageSnapshot } from "./usage";
 import type { AiGenerateThreadTitleInput, AiGenerateThreadTitleResult } from "./ai";
 
@@ -118,6 +123,23 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  liveBrowser: {
+    start: (url: string) => Promise<void>;
+    stop: () => Promise<void>;
+    navigate: (url: string) => Promise<void>;
+    back: () => Promise<void>;
+    forward: () => Promise<void>;
+    reload: () => Promise<void>;
+    startInspect: () => Promise<void>;
+    stopInspect: () => Promise<void>;
+    screenshotElement: (nodeId: number) => Promise<LiveBrowserElementScreenshot | null>;
+    getState: () => Promise<LiveBrowserState>;
+    setBounds: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>;
+    onUrlChanged: (listener: (url: string) => void) => () => void;
+    onTitleChanged: (listener: (title: string) => void) => () => void;
+    onElementInspected: (listener: (result: LiveBrowserInspectResult) => void) => () => void;
+    onStateChanged: (listener: (state: LiveBrowserState) => void) => () => void;
+  };
 }
 
 export interface NativeApi {
@@ -191,5 +213,22 @@ export interface NativeApi {
   };
   ai: {
     generateThreadTitle: (input: AiGenerateThreadTitleInput) => Promise<AiGenerateThreadTitleResult>;
+  };
+  liveBrowser: {
+    start: (url: string) => Promise<void>;
+    stop: () => Promise<void>;
+    navigate: (url: string) => Promise<void>;
+    back: () => Promise<void>;
+    forward: () => Promise<void>;
+    reload: () => Promise<void>;
+    startInspect: () => Promise<void>;
+    stopInspect: () => Promise<void>;
+    screenshotElement: (nodeId: number) => Promise<LiveBrowserElementScreenshot | null>;
+    getState: () => Promise<LiveBrowserState>;
+    setBounds: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>;
+    onUrlChanged: (listener: (url: string) => void) => () => void;
+    onTitleChanged: (listener: (title: string) => void) => () => void;
+    onElementInspected: (listener: (result: LiveBrowserInspectResult) => void) => () => void;
+    onStateChanged: (listener: (state: LiveBrowserState) => void) => () => void;
   };
 }

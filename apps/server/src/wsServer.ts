@@ -80,6 +80,7 @@ import {
   runBrowserTest,
   stopBrowserTest,
 } from "./browserTest/browserTestRunner";
+import { resolveSourceLocation } from "./liveBrowser/sourceMapResolver";
 import { UsageTrackerService } from "./usageTracker.ts";
 
 /**
@@ -1078,6 +1079,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             }),
         });
         return {};
+      }
+
+      case WS_METHODS.liveBrowserResolveSource: {
+        const body = stripRequestTag(request.body);
+        const result = yield* Effect.tryPromise({
+          try: () => resolveSourceLocation(body.filePath, body.line, body.column ?? undefined, cwd),
+          catch: (cause) =>
+            new RouteRequestError({
+              message: `Failed to resolve source: ${String(cause)}`,
+            }),
+        });
+        return result;
       }
 
       case WS_METHODS.aiGenerateThreadTitle: {

@@ -1,5 +1,5 @@
 import { FitAddon } from "@xterm/addon-fit";
-import { Plus, SquareSplitHorizontal, TerminalSquare, Trash2, XIcon } from "lucide-react";
+import { Globe, Plus, SquareSplitHorizontal, TerminalSquare, Trash2, XIcon } from "lucide-react";
 import { type ThreadId } from "@t3tools/contracts";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import {
@@ -26,7 +26,11 @@ import {
   type ThreadTerminalGroup,
 } from "../types";
 import { readNativeApi } from "~/nativeApi";
+import { useNavigate } from "@tanstack/react-router";
 import { getAppSettingsSnapshot } from "../appSettings";
+import { useLiveBrowserStore } from "../liveBrowserStore";
+import { useDevServerStore } from "../devServerStore";
+import { stripDiffSearchParams } from "../diffRouteSearch";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
@@ -291,6 +295,10 @@ function TerminalViewport({
         activeTerminal.write("\u001bc");
         if (snapshot.history.length > 0) {
           activeTerminal.write(snapshot.history);
+          // NOTE: We intentionally do NOT scan history for dev server URLs.
+          // History can contain stale URLs from previous sessions that are
+          // no longer running, causing false positives and ERR_CONNECTION_REFUSED.
+          // Only live output events are scanned.
         }
         if (autoFocus) {
           window.requestAnimationFrame(() => {
@@ -506,6 +514,13 @@ export default function ThreadTerminalDrawer({
 }: ThreadTerminalDrawerProps) {
   const [drawerHeight, setDrawerHeight] = useState(() => clampDrawerHeight(height));
   const [resizeEpoch, setResizeEpoch] = useState(0);
+  const detectedDevServerUrl = useDevServerStore((s) => s.detectedUrls[threadId] ?? null);
+  const [devServerBannerDismissed, setDevServerBannerDismissed] = useState(false);
+  const liveBrowserAvailable = useLiveBrowserStore((s) => s.isAvailable);
+  const liveBrowserIsOpen = useLiveBrowserStore((s) => s.isOpen);
+  const liveBrowserOpen = useLiveBrowserStore((s) => s.open);
+  const navigate = useNavigate();
+  const autoOpenHandledRef = useRef(false);
   const drawerHeightRef = useRef(drawerHeight);
   const lastSyncedHeightRef = useRef(clampDrawerHeight(height));
   const onHeightChangeRef = useRef(onHeightChange);
@@ -638,6 +653,47 @@ export default function ThreadTerminalDrawer({
     onNewTerminal();
   }, [hasReachedTerminalLimit, onNewTerminal]);
 
+  // Navigate to the live browser panel (?browser=1), closing the diff panel if open
+  const navigateToBrowser = useCallback(() => {
+    void navigate({
+      to: "/$threadId",
+      params: { threadId },
+      search: (prev) => ({ ...stripDiffSearchParams(prev), browser: "1" }),
+    });
+  }, [navigate, threadId]);
+
+  // Auto-open the live browser when a dev server URL is detected
+  useEffect(() => {
+    if (!detectedDevServerUrl) return;
+    setDevServerBannerDismissed(false);
+
+    if (
+      liveBrowserAvailable &&
+      !liveBrowserIsOpen &&
+      !autoOpenHandledRef.current
+    ) {
+      const settings = getAppSettingsSnapshot();
+      if (settings.liveBrowserAutoOpen) {
+        autoOpenHandledRef.current = true;
+        void liveBrowserOpen(detectedDevServerUrl);
+        navigateToBrowser();
+      }
+    }
+  }, [detectedDevServerUrl, liveBrowserAvailable, liveBrowserIsOpen, liveBrowserOpen, navigateToBrowser]);
+
+  const handleOpenInBrowser = useCallback(() => {
+    if (!detectedDevServerUrl) return;
+    void liveBrowserOpen(detectedDevServerUrl);
+    navigateToBrowser();
+    setDevServerBannerDismissed(true);
+  }, [detectedDevServerUrl, liveBrowserOpen, navigateToBrowser]);
+
+  // Reset banner dismissal when thread changes
+  useEffect(() => {
+    setDevServerBannerDismissed(false);
+    autoOpenHandledRef.current = false;
+  }, [threadId]);
+
   useEffect(() => {
     onHeightChangeRef.current = onHeightChange;
   }, [onHeightChange]);
@@ -741,6 +797,37 @@ export default function ThreadTerminalDrawer({
         onPointerUp={handleResizePointerEnd}
         onPointerCancel={handleResizePointerEnd}
       />
+
+      {/* Dev Server Detected Banner */}
+      {detectedDevServerUrl && !devServerBannerDismissed && !liveBrowserIsOpen && (
+        <div className="flex items-center gap-2 border-b border-border/60 bg-primary/5 px-3 py-1.5 text-xs">
+          <Globe className="size-3.5 shrink-0 text-primary" />
+          <span className="min-w-0 truncate text-foreground/80">
+            Dev server detected at{" "}
+            <span className="font-medium text-foreground">{detectedDevServerUrl}</span>
+          </span>
+          {liveBrowserAvailable && (
+            <button
+              type="button"
+              className="ml-auto shrink-0 rounded-md bg-primary px-2.5 py-0.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              onClick={handleOpenInBrowser}
+            >
+              Open in Browser
+            </button>
+          )}
+          <button
+            type="button"
+            className={`shrink-0 rounded-md p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground ${liveBrowserAvailable ? "" : "ml-auto"}`}
+            onClick={() => {
+              setDevServerBannerDismissed(true);
+              useDevServerStore.getState().clearUrl(threadId);
+            }}
+            aria-label="Dismiss"
+          >
+            <XIcon className="size-3" />
+          </button>
+        </div>
+      )}
 
       {!hasTerminalSidebar && (
         <div className="pointer-events-none absolute right-2 top-2 z-20">

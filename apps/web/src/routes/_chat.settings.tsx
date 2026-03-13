@@ -679,6 +679,55 @@ function SettingsRouteView() {
               </div>
             </section>
 
+            {isElectron && (
+              <section className="rounded-2xl border border-border bg-card p-5">
+                <div className="mb-4">
+                  <h2 className="text-sm font-medium text-foreground">Live Browser</h2>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Configure the embedded browser that opens alongside your chat when a dev server is
+                    detected.
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">
+                      Auto-open when dev server starts
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Automatically open the live browser panel when a dev server URL is detected in
+                      the terminal output.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings.liveBrowserAutoOpen}
+                    onCheckedChange={(checked) =>
+                      updateSettings({
+                        liveBrowserAutoOpen: Boolean(checked),
+                      })
+                    }
+                    aria-label="Auto-open live browser when dev server starts"
+                  />
+                </div>
+
+                {settings.liveBrowserAutoOpen !== defaults.liveBrowserAutoOpen ? (
+                  <div className="mt-3 flex justify-end">
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() =>
+                        updateSettings({
+                          liveBrowserAutoOpen: defaults.liveBrowserAutoOpen,
+                        })
+                      }
+                    >
+                      Restore default
+                    </Button>
+                  </div>
+                ) : null}
+              </section>
+            )}
+
             <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Safety</h2>

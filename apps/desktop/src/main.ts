@@ -15,6 +15,7 @@ import { NetService } from "@t3tools/shared/Net";
 import { RotatingFileSink } from "@t3tools/shared/logging";
 import { showDesktopConfirmDialog } from "./confirmDialog";
 import { fixPath } from "./fixPath";
+import { registerLiveBrowserIpcHandlers } from "./liveBrowser";
 import { getAutoUpdateDisabledReason, shouldBroadcastDownloadProgress } from "./updateState";
 import {
   createInitialDesktopUpdateState,
@@ -77,6 +78,7 @@ let desktopLogSink: RotatingFileSink | null = null;
 let backendLogSink: RotatingFileSink | null = null;
 let restoreStdIoCapture: (() => void) | null = null;
 
+let liveBrowserManager: ReturnType<typeof registerLiveBrowserIpcHandlers> | null = null;
 let destructiveMenuIconCache: Electron.NativeImage | null | undefined;
 const desktopRuntimeInfo = resolveDesktopRuntimeInfo({
   platform: process.platform,
@@ -1167,6 +1169,9 @@ function registerIpcHandlers(): void {
       state: updateState,
     } satisfies DesktopUpdateActionResult;
   });
+
+  // Live Browser
+  liveBrowserManager = registerLiveBrowserIpcHandlers(() => mainWindow);
 }
 
 function getIconOption(): { icon: string } | Record<string, never> {
@@ -1292,6 +1297,7 @@ app.on("before-quit", () => {
   isQuitting = true;
   writeDesktopLogHeader("before-quit received");
   clearUpdatePollTimer();
+  void liveBrowserManager?.stop().catch(() => {});
   stopBackend();
   restoreStdIoCapture?.();
 });

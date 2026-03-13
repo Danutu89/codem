@@ -12,5 +12,6 @@ export * from "./orchestration";
 export * from "./editor";
 export * from "./project";
 export * from "./browserTest";
+export * from "./liveBrowser";
 export * from "./usage";
 export * from "./ai";

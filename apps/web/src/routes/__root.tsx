@@ -23,6 +23,7 @@ import { terminalRunningSubprocessFromEvent } from "../terminalActivity";
 import { onServerConfigUpdated, onServerWelcome } from "../wsNativeApi";
 import { providerQueryKeys } from "../lib/providerReactQuery";
 import { collectActiveTerminalThreadIds } from "../lib/terminalStateCleanup";
+import { useDevServerStore } from "../devServerStore";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -213,6 +214,14 @@ function EventRouter() {
       domainEventFlushThrottler.maybeExecute();
     });
     const unsubTerminalEvent = api.terminal.onEvent((event) => {
+      // Dev server URL detection — runs here (root EventRouter) so it
+      // survives HMR remounts of the TerminalViewport component.
+      if (event.type === "output") {
+        useDevServerStore.getState().processOutput(event.threadId, event.data);
+      } else if (event.type === "started" || event.type === "restarted") {
+        useDevServerStore.getState().resetThread(event.threadId);
+      }
+
       const hasRunningSubprocess = terminalRunningSubprocessFromEvent(event);
       if (hasRunningSubprocess === null) {
         return;

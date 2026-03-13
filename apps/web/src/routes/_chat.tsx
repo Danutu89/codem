@@ -4,9 +4,17 @@ import { useEffect } from "react";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import ThreadSidebar from "../components/Sidebar";
 import { Sidebar, SidebarProvider } from "~/components/ui/sidebar";
+import { useLiveBrowserStore } from "../liveBrowserStore";
 
 function ChatRouteLayout() {
   const navigate = useNavigate();
+
+  // Initialize the live browser store early so IPC events are captured
+  // before the LiveBrowserPanel component mounts.
+  useEffect(() => {
+    const cleanup = useLiveBrowserStore.getState().init();
+    return cleanup;
+  }, []);
 
   useEffect(() => {
     const onMenuAction = window.desktopBridge?.onMenuAction;

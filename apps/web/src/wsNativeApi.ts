@@ -227,6 +227,89 @@ export function createWsNativeApi(): NativeApi {
     ai: {
       generateThreadTitle: (input) => transport.request(WS_METHODS.aiGenerateThreadTitle, input),
     },
+    liveBrowser: {
+      start: async (url) => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.start(url);
+        }
+      },
+      stop: async () => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.stop();
+        }
+      },
+      navigate: async (url) => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.navigate(url);
+        }
+      },
+      back: async () => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.back();
+        }
+      },
+      forward: async () => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.forward();
+        }
+      },
+      reload: async () => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.reload();
+        }
+      },
+      startInspect: async () => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.startInspect();
+        }
+      },
+      stopInspect: async () => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.stopInspect();
+        }
+      },
+      screenshotElement: async (nodeId) => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.screenshotElement(nodeId);
+        }
+        return null;
+      },
+      getState: async () => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.getState();
+        }
+        return { isOpen: false, status: "idle" as const, url: "", title: "", isInspecting: false };
+      },
+      setBounds: async (bounds) => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.setBounds(bounds);
+        }
+      },
+      onUrlChanged: (listener) => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.onUrlChanged(listener);
+        }
+        return () => {};
+      },
+      onTitleChanged: (listener) => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.onTitleChanged(listener);
+        }
+        return () => {};
+      },
+      onElementInspected: (listener) => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.onElementInspected(listener);
+        }
+        return () => {};
+      },
+      onStateChanged: (listener) => {
+        if (window.desktopBridge?.liveBrowser) {
+          return window.desktopBridge.liveBrowser.onStateChanged(listener);
+        }
+        return () => {};
+      },
+    },
   };
 
   instance = { api, transport };

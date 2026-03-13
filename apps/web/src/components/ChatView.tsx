@@ -236,6 +236,7 @@ import { clamp } from "effect/Number";
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { estimateTimelineMessageHeight } from "./timelineHeight";
+import { useLiveBrowserStore } from "../liveBrowserStore";
 
 function formatMessageMeta(createdAt: string, duration: string | null): string {
   if (!duration) return formatTimestamp(createdAt);
@@ -790,6 +791,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const promptRef = useRef(prompt);
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
+
+  // Hide the Electron WebContentsView (live browser) when the image zoom overlay
+  // is open — native views always render above web content regardless of z-index.
+  useEffect(() => {
+    useLiveBrowserStore.getState().setOverlayOpen(!!expandedImage);
+  }, [expandedImage]);
+
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
   optimisticUserMessagesRef.current = optimisticUserMessages;
