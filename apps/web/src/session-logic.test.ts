@@ -340,7 +340,7 @@ describe("deriveWorkLogEntries", () => {
       }),
     ];
 
-    const entries = deriveWorkLogEntries(activities, undefined);
+    const entries = deriveWorkLogEntries(activities);
     expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
   });
 
@@ -369,11 +369,11 @@ describe("deriveWorkLogEntries", () => {
       }),
     ];
 
-    const entries = deriveWorkLogEntries(activities, undefined);
+    const entries = deriveWorkLogEntries(activities);
     expect(entries.map((entry) => entry.id)).toEqual(["task-progress"]);
   });
 
-  it("filters by turn id when provided", () => {
+  it("returns activities across all turns", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({ id: "turn-1", turnId: "turn-1", summary: "Tool call", kind: "tool.started" }),
       makeActivity({
@@ -385,7 +385,7 @@ describe("deriveWorkLogEntries", () => {
       makeActivity({ id: "no-turn", summary: "Checkpoint captured", tone: "info" }),
     ];
 
-    const entries = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-2"));
+    const entries = deriveWorkLogEntries(activities);
     expect(entries.map((entry) => entry.id)).toEqual(["turn-2"]);
   });
 
@@ -406,7 +406,7 @@ describe("deriveWorkLogEntries", () => {
       }),
     ];
 
-    const entries = deriveWorkLogEntries(activities, undefined);
+    const entries = deriveWorkLogEntries(activities);
     expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
   });
 
@@ -428,7 +428,7 @@ describe("deriveWorkLogEntries", () => {
       }),
     ];
 
-    const entries = deriveWorkLogEntries(activities, undefined);
+    const entries = deriveWorkLogEntries(activities);
     expect(entries.map((entry) => entry.id)).toEqual(["first", "second"]);
   });
 
@@ -449,7 +449,7 @@ describe("deriveWorkLogEntries", () => {
       }),
     ];
 
-    const [entry] = deriveWorkLogEntries(activities, undefined);
+    const [entry] = deriveWorkLogEntries(activities);
     expect(entry?.command).toBe("bun run lint");
   });
 
@@ -473,7 +473,7 @@ describe("deriveWorkLogEntries", () => {
       }),
     ];
 
-    const [entry] = deriveWorkLogEntries(activities, undefined);
+    const [entry] = deriveWorkLogEntries(activities);
     expect(entry?.changedFiles).toEqual([
       "apps/web/src/components/ChatView.tsx",
       "apps/web/src/session-logic.ts",

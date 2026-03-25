@@ -10,6 +10,7 @@ import {
   type CanUseTool,
   query,
   type Options as ClaudeQueryOptions,
+  type McpServerConfig,
   type PermissionMode,
   type PermissionResult,
   type PermissionUpdate,
@@ -136,6 +137,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
+  readonly applyFlagSettings: (settings: Record<string, unknown>) => Promise<void>;
   readonly close: () => void;
 }
 
@@ -1371,6 +1373,22 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
               },
             });
             return;
+          case "api_retry":
+            yield* offerRuntimeEvent({
+              ...base,
+              type: "runtime.warning",
+              payload: {
+                message: `API retry: attempt ${message.attempt}/${message.max_retries}, retrying in ${message.retry_delay_ms}ms${message.error_status ? ` (HTTP ${message.error_status})` : ""}`,
+                detail: {
+                  attempt: message.attempt,
+                  maxRetries: message.max_retries,
+                  retryDelayMs: message.retry_delay_ms,
+                  errorStatus: message.error_status,
+                  error: message.error,
+                },
+              },
+            });
+            return;
           default:
             yield* emitRuntimeWarning(
               context,
@@ -2032,6 +2050,9 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
         // plan-mode deny policy in one place.
         const permissionMode = toPermissionMode(providerOptions?.permissionMode);
 
+        const claudeModelOptions = input.modelOptions?.claudeCode;
+        const effortLevel = claudeModelOptions?.effort;
+
         const queryOptions: ClaudeQueryOptions = {
           ...(input.cwd ? { cwd: input.cwd } : {}),
           ...(input.model ? { model: input.model } : {}),
@@ -2046,8 +2067,24 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
           ...(providerOptions?.maxThinkingTokens !== undefined
             ? { maxThinkingTokens: providerOptions.maxThinkingTokens }
             : {}),
+          ...(effortLevel ? { effort: effortLevel } : {}),
+          ...(providerOptions?.appendSystemPrompt
+            ? {
+                systemPrompt: {
+                  type: "preset" as const,
+                  preset: "claude_code" as const,
+                  append: providerOptions.appendSystemPrompt,
+                },
+              }
+            : {}),
           ...(resumeState?.resume ? { resume: resumeState.resume } : {}),
           ...(resumeState?.resumeSessionAt ? { resumeSessionAt: resumeState.resumeSessionAt } : {}),
+          ...(providerOptions?.mcpServers &&
+          Object.keys(providerOptions.mcpServers).length > 0
+            ? {
+                mcpServers: providerOptions.mcpServers as Record<string, McpServerConfig>,
+              }
+            : {}),
           includePartialMessages: true,
           canUseTool,
           env: process.env,
@@ -2150,6 +2187,7 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
               ...(providerOptions?.maxThinkingTokens !== undefined
                 ? { maxThinkingTokens: providerOptions.maxThinkingTokens }
                 : {}),
+              ...(effortLevel ? { effort: effortLevel } : {}),
             },
           },
           providerRefs: {},
@@ -2191,6 +2229,18 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
           yield* Effect.tryPromise({
             try: () => context.query.setModel(input.model),
             catch: (cause) => toRequestError(input.threadId, "turn/setModel", cause),
+          });
+        }
+
+        // Apply effort level changes mid-session via applyFlagSettings
+        const turnEffort = input.modelOptions?.claudeCode?.effort;
+        if (turnEffort) {
+          yield* Effect.tryPromise({
+            try: () =>
+              context.query.applyFlagSettings({
+                effortLevel: turnEffort === "max" ? "high" : turnEffort,
+              }),
+            catch: (cause) => toRequestError(input.threadId, "turn/applyFlagSettings/effort", cause),
           });
         }
 

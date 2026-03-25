@@ -1,5 +1,6 @@
 import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
 import {
+  MessageId,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
   OrchestrationSession,
@@ -20,6 +21,7 @@ import {
   ThreadMetaUpdatedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
+  ThreadContextCompactedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadTurnDiffCompletedPayload,
@@ -542,7 +544,21 @@ export function projectEvent(
             .filter((entry) => entry.checkpointTurnCount <= payload.turnCount)
             .toSorted((left, right) => left.checkpointTurnCount - right.checkpointTurnCount)
             .slice(-MAX_THREAD_CHECKPOINTS);
-          const retainedTurnIds = new Set(checkpoints.map((checkpoint) => checkpoint.turnId));
+          const checkpointTurnIds = new Set(checkpoints.map((checkpoint) => checkpoint.turnId));
+
+          // Also retain turnIds derived from chronological message order (for conversation-only
+          // rewind where no checkpoints exist for the retained turns).
+          const distinctTurnIdsInOrder = [
+            ...new Set(
+              [...thread.messages]
+                .filter((message) => message.turnId !== null)
+                .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt))
+                .map((message) => message.turnId as string),
+            ),
+          ];
+          const positionTurnIds = distinctTurnIdsInOrder.slice(0, payload.turnCount);
+          const retainedTurnIds = new Set([...checkpointTurnIds, ...positionTurnIds]);
+
           const messages = retainThreadMessagesAfterRevert(
             thread.messages,
             retainedTurnIds,
@@ -605,6 +621,43 @@ export function projectEvent(
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               activities,
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.context-compacted":
+      return decodeForEvent(
+        ThreadContextCompactedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+
+          const summaryMessage: OrchestrationMessage = {
+            id: MessageId.makeUnsafe(`compaction-${event.eventId}`),
+            role: "system",
+            text: `Context compacted. The conversation history has been summarized and a fresh session started.`,
+            turnId: null,
+            streaming: false,
+            createdAt: event.occurredAt,
+            updatedAt: event.occurredAt,
+          };
+
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              messages: [summaryMessage],
+              activities: [],
+              proposedPlans: [],
+              checkpoints: [],
+              latestTurn: null,
               updatedAt: event.occurredAt,
             }),
           };

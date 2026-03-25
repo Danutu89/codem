@@ -1,6 +1,7 @@
 import {
   ApprovalRequestId,
   type ChatAttachment,
+  MessageId,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -559,6 +560,21 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           return;
         }
 
+        case "thread.context-compacted": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            latestTurnId: null,
+            updatedAt: event.occurredAt,
+          });
+          return;
+        }
+
         default:
           return;
       }
@@ -636,6 +652,27 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           return;
         }
 
+        case "thread.context-compacted": {
+          yield* projectionThreadMessageRepository.deleteByThreadId({
+            threadId: event.payload.threadId,
+          });
+          yield* projectionThreadMessageRepository.upsert({
+            messageId: MessageId.makeUnsafe(`compaction-${event.eventId}`),
+            threadId: event.payload.threadId,
+            turnId: null,
+            role: "system",
+            text: "Context compacted. The conversation history has been summarized and a fresh session started.",
+            isStreaming: false,
+            createdAt: event.occurredAt,
+            updatedAt: event.occurredAt,
+          });
+          attachmentSideEffects.prunedThreadRelativePaths.set(
+            event.payload.threadId,
+            new Set(),
+          );
+          return;
+        }
+
         default:
           return;
       }
@@ -684,6 +721,13 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* Effect.forEach(keptRows, projectionThreadProposedPlanRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
+          return;
+        }
+
+        case "thread.context-compacted": {
+          yield* projectionThreadProposedPlanRepository.deleteByThreadId({
+            threadId: event.payload.threadId,
+          });
           return;
         }
 
@@ -738,6 +782,13 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* Effect.forEach(keptRows, projectionThreadActivityRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
+          return;
+        }
+
+        case "thread.context-compacted": {
+          yield* projectionThreadActivityRepository.deleteByThreadId({
+            threadId: event.payload.threadId,
+          });
           return;
         }
 
@@ -991,6 +1042,13 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
                   }),
             { concurrency: 1 },
           ).pipe(Effect.asVoid);
+          return;
+        }
+
+        case "thread.context-compacted": {
+          yield* projectionTurnRepository.deleteByThreadId({
+            threadId: event.payload.threadId,
+          });
           return;
         }
 

@@ -436,80 +436,99 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.catch(() => Effect.void));
       return;
     }
-    if (!isGitWorkspace(sessionRuntime.value.cwd)) {
-      yield* appendRevertFailureActivity({
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        detail: "Checkpoints are unavailable because this project is not a git repository.",
-        createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
-      return;
-    }
+    const useCheckpointRevert =
+      thread.checkpoints.length > 0 && isGitWorkspace(sessionRuntime.value.cwd);
 
-    const currentTurnCount = thread.checkpoints.reduce(
-      (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
-      0,
-    );
+    if (useCheckpointRevert) {
+      // ── Checkpoint-based revert: restore git state + rollback conversation ──
+      const currentTurnCount = thread.checkpoints.reduce(
+        (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
+        0,
+      );
 
-    if (event.payload.turnCount > currentTurnCount) {
-      yield* appendRevertFailureActivity({
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        detail: `Checkpoint turn count ${event.payload.turnCount} exceeds current turn count ${currentTurnCount}.`,
-        createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
-      return;
-    }
+      if (event.payload.turnCount > currentTurnCount) {
+        yield* appendRevertFailureActivity({
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          detail: `Checkpoint turn count ${event.payload.turnCount} exceeds current turn count ${currentTurnCount}.`,
+          createdAt: now,
+        }).pipe(Effect.catch(() => Effect.void));
+        return;
+      }
 
-    const targetCheckpointRef =
-      event.payload.turnCount === 0
-        ? checkpointRefForThreadTurn(event.payload.threadId, 0)
-        : thread.checkpoints.find(
-            (checkpoint) => checkpoint.checkpointTurnCount === event.payload.turnCount,
-          )?.checkpointRef;
+      const targetCheckpointRef =
+        event.payload.turnCount === 0
+          ? checkpointRefForThreadTurn(event.payload.threadId, 0)
+          : thread.checkpoints.find(
+              (checkpoint) => checkpoint.checkpointTurnCount === event.payload.turnCount,
+            )?.checkpointRef;
 
-    if (!targetCheckpointRef) {
-      yield* appendRevertFailureActivity({
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        detail: `Checkpoint ref for turn ${event.payload.turnCount} is unavailable in read model.`,
-        createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
-      return;
-    }
+      if (!targetCheckpointRef) {
+        yield* appendRevertFailureActivity({
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          detail: `Checkpoint ref for turn ${event.payload.turnCount} is unavailable in read model.`,
+          createdAt: now,
+        }).pipe(Effect.catch(() => Effect.void));
+        return;
+      }
 
-    const restored = yield* checkpointStore.restoreCheckpoint({
-      cwd: sessionRuntime.value.cwd,
-      checkpointRef: targetCheckpointRef,
-      fallbackToHead: event.payload.turnCount === 0,
-    });
-    if (!restored) {
-      yield* appendRevertFailureActivity({
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        detail: `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
-        createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
-      return;
-    }
-
-    const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
-    if (rolledBackTurns > 0) {
-      yield* providerService.rollbackConversation({
-        threadId: sessionRuntime.value.threadId,
-        numTurns: rolledBackTurns,
-      });
-    }
-
-    const staleCheckpointRefs = thread.checkpoints
-      .filter((checkpoint) => checkpoint.checkpointTurnCount > event.payload.turnCount)
-      .map((checkpoint) => checkpoint.checkpointRef);
-
-    if (staleCheckpointRefs.length > 0) {
-      yield* checkpointStore.deleteCheckpointRefs({
+      const restored = yield* checkpointStore.restoreCheckpoint({
         cwd: sessionRuntime.value.cwd,
-        checkpointRefs: staleCheckpointRefs,
+        checkpointRef: targetCheckpointRef,
+        fallbackToHead: event.payload.turnCount === 0,
       });
+      if (!restored) {
+        yield* appendRevertFailureActivity({
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          detail: `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
+          createdAt: now,
+        }).pipe(Effect.catch(() => Effect.void));
+        return;
+      }
+
+      const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
+      if (rolledBackTurns > 0) {
+        yield* providerService.rollbackConversation({
+          threadId: sessionRuntime.value.threadId,
+          numTurns: rolledBackTurns,
+        });
+      }
+
+      const staleCheckpointRefs = thread.checkpoints
+        .filter((checkpoint) => checkpoint.checkpointTurnCount > event.payload.turnCount)
+        .map((checkpoint) => checkpoint.checkpointRef);
+
+      if (staleCheckpointRefs.length > 0) {
+        yield* checkpointStore.deleteCheckpointRefs({
+          cwd: sessionRuntime.value.cwd,
+          checkpointRefs: staleCheckpointRefs,
+        });
+      }
+    } else {
+      // ── Conversation-only rewind: rollback provider turns without git ──
+      const currentTurnCount = thread.messages.filter(
+        (message) => message.role === "user",
+      ).length;
+
+      if (event.payload.turnCount > currentTurnCount) {
+        yield* appendRevertFailureActivity({
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          detail: `Turn count ${event.payload.turnCount} exceeds current turn count ${currentTurnCount}.`,
+          createdAt: now,
+        }).pipe(Effect.catch(() => Effect.void));
+        return;
+      }
+
+      const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
+      if (rolledBackTurns > 0) {
+        yield* providerService.rollbackConversation({
+          threadId: sessionRuntime.value.threadId,
+          numTurns: rolledBackTurns,
+        });
+      }
     }
 
     yield* orchestrationEngine

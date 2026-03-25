@@ -6,6 +6,23 @@ import { getDefaultModel, getModelOptions, normalizeModelSlug } from "@t3tools/s
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
+const MAX_MCP_SERVER_COUNT = 20;
+
+const McpServerEntrySchema = Schema.Struct({
+  name: Schema.String,
+  transport: Schema.Literals(["stdio", "sse", "http"]),
+  /** For stdio: the command to run. */
+  command: Schema.optional(Schema.String),
+  /** For stdio: arguments as a space-separated string. */
+  args: Schema.optional(Schema.String),
+  /** For sse/http: the URL. */
+  url: Schema.optional(Schema.String),
+  /** For stdio: environment variables. */
+  env: Schema.optional(Schema.Array(Schema.Struct({ key: Schema.String, value: Schema.String }))),
+  /** For sse/http: headers. */
+  headers: Schema.optional(Schema.Array(Schema.Struct({ key: Schema.String, value: Schema.String }))),
+});
+export type McpServerEntry = typeof McpServerEntrySchema.Type;
 const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
   codex: new Set(getModelOptions("codex").map((option) => option.slug)),
   claudeCode: new Set(getModelOptions("claudeCode").map((option) => option.slug)),
@@ -46,6 +63,9 @@ const AppSettingsSchema = Schema.Struct({
   ),
   liveBrowserAutoOpen: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
+  ),
+  mcpServers: Schema.Array(McpServerEntrySchema).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
   ),
 });
 export type AppSettings = typeof AppSettingsSchema.Type;
@@ -96,6 +116,7 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
     customCodexModels: normalizeCustomModelSlugs(settings.customCodexModels, "codex"),
     customClaudeModels: normalizeCustomModelSlugs(settings.customClaudeModels, "claudeCode"),
     customCursorModels: normalizeCustomModelSlugs(settings.customCursorModels, "cursor"),
+    mcpServers: settings.mcpServers.slice(0, MAX_MCP_SERVER_COUNT),
   };
 }
 

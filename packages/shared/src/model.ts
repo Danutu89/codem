@@ -1,12 +1,16 @@
 import {
+  CLAUDE_EFFORT_OPTIONS,
   CODEX_REASONING_EFFORT_OPTIONS,
   CURSOR_MODEL_FAMILY_OPTIONS,
   CURSOR_REASONING_OPTIONS,
+  DEFAULT_EFFORT_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
+  EFFORT_OPTIONS_BY_PROVIDER,
   MODEL_OPTIONS_BY_PROVIDER,
   MODEL_SLUG_ALIASES_BY_PROVIDER,
   REASONING_EFFORT_OPTIONS_BY_PROVIDER,
+  type ClaudeEffortLevel,
   type CodexReasoningEffort,
   type CursorModelFamily,
   type CursorModelSlug,
@@ -277,4 +281,19 @@ export function getDefaultReasoningEffort(
   return DEFAULT_REASONING_EFFORT_BY_PROVIDER[provider];
 }
 
-export { CODEX_REASONING_EFFORT_OPTIONS };
+export function getClaudeEffortOptions(
+  provider: ProviderKind = "claudeCode",
+): ReadonlyArray<ClaudeEffortLevel> {
+  if (provider !== "claudeCode") return [];
+  return EFFORT_OPTIONS_BY_PROVIDER.claudeCode;
+}
+
+export function getDefaultClaudeEffort(provider: "claudeCode"): ClaudeEffortLevel;
+export function getDefaultClaudeEffort(provider: ProviderKind): ClaudeEffortLevel | null;
+export function getDefaultClaudeEffort(
+  provider: ProviderKind = "claudeCode",
+): ClaudeEffortLevel | null {
+  return (DEFAULT_EFFORT_BY_PROVIDER[provider] as ClaudeEffortLevel | null) ?? null;
+}
+
+export { CODEX_REASONING_EFFORT_OPTIONS, CLAUDE_EFFORT_OPTIONS };

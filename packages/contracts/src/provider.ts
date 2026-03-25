@@ -53,10 +53,23 @@ const CodexProviderStartOptions = Schema.Struct({
   homePath: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 
+/**
+ * MCP server configurations keyed by server name.
+ * Values are passed through to the Claude Agent SDK as McpServerConfig objects
+ * (stdio, SSE, or HTTP transport). We use Schema.Unknown for the values here
+ * because the SDK handles its own validation of server config shapes.
+ */
+export const McpServersConfigSchema = Schema.Record(Schema.String, Schema.Unknown);
+export type McpServersConfig = typeof McpServersConfigSchema.Type;
+
 const ClaudeCodeProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyStringSchema),
   permissionMode: Schema.optional(TrimmedNonEmptyStringSchema),
   maxThinkingTokens: Schema.optional(NonNegativeInt),
+  /** System prompt to append when starting a session (used for compaction summaries). */
+  appendSystemPrompt: Schema.optional(Schema.String),
+  /** MCP server configurations keyed by server name. */
+  mcpServers: Schema.optional(McpServersConfigSchema),
 });
 
 const CursorProviderStartOptions = Schema.Struct({

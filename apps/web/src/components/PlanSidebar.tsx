@@ -1,4 +1,4 @@
-import { memo, useState, useCallback } from "react";
+import { memo, useState, useCallback, useRef, useEffect } from "react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
@@ -9,6 +9,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   EllipsisIcon,
+  GripVerticalIcon,
   LoaderIcon,
   PanelRightCloseIcon,
 } from "lucide-react";
@@ -30,6 +31,11 @@ import { toastManager } from "./ui/toast";
 import type { ApprovalRequestId } from "@t3tools/contracts";
 import type { ProviderApprovalDecision } from "@t3tools/contracts";
 
+const PLAN_SIDEBAR_MIN_WIDTH = 280;
+const PLAN_SIDEBAR_MAX_WIDTH = 700;
+const PLAN_SIDEBAR_DEFAULT_WIDTH = 340;
+const PLAN_SIDEBAR_WIDTH_STORAGE_KEY = "plan_sidebar_width";
+
 function stepStatusIcon(status: string): React.ReactNode {
   if (status === "completed") {
     return (
@@ -50,6 +56,33 @@ function stepStatusIcon(status: string): React.ReactNode {
       <span className="size-1.5 rounded-full bg-muted-foreground/30" />
     </span>
   );
+}
+
+function readStoredWidth(): number {
+  try {
+    const stored = localStorage.getItem(PLAN_SIDEBAR_WIDTH_STORAGE_KEY);
+    if (stored) {
+      const parsed = Number.parseInt(stored, 10);
+      if (
+        Number.isFinite(parsed) &&
+        parsed >= PLAN_SIDEBAR_MIN_WIDTH &&
+        parsed <= PLAN_SIDEBAR_MAX_WIDTH
+      ) {
+        return parsed;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return PLAN_SIDEBAR_DEFAULT_WIDTH;
+}
+
+function storeWidth(width: number): void {
+  try {
+    localStorage.setItem(PLAN_SIDEBAR_WIDTH_STORAGE_KEY, String(width));
+  } catch {
+    // ignore
+  }
 }
 
 interface PlanSidebarProps {
@@ -87,6 +120,10 @@ const PlanSidebar = memo(function PlanSidebar({
   const [isSavingToWorkspace, setIsSavingToWorkspace] = useState(false);
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const [width, setWidth] = useState(readStoredWidth);
+  const isResizingRef = useRef(false);
+  const startXRef = useRef(0);
+  const startWidthRef = useRef(0);
 
   // When there's a pending plan approval, use the approval detail as the plan markdown.
   // Otherwise fall back to the proposed plan, then the last approved plan.
@@ -149,12 +186,68 @@ const PlanSidebar = memo(function PlanSidebar({
     setFeedback("");
   }, [pendingPlanApproval, feedback, onRespondToApproval]);
 
+  // Resize handlers
+  const onResizeMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      isResizingRef.current = true;
+      startXRef.current = e.clientX;
+      startWidthRef.current = width;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        if (!isResizingRef.current) return;
+        // Dragging left increases width (sidebar is on the right)
+        const delta = startXRef.current - moveEvent.clientX;
+        const nextWidth = Math.min(
+          PLAN_SIDEBAR_MAX_WIDTH,
+          Math.max(PLAN_SIDEBAR_MIN_WIDTH, startWidthRef.current + delta),
+        );
+        setWidth(nextWidth);
+      };
+
+      const onMouseUp = () => {
+        if (isResizingRef.current) {
+          isResizingRef.current = false;
+          document.body.style.cursor = "";
+          document.body.style.userSelect = "";
+        }
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+      };
+
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    },
+    [width],
+  );
+
+  // Persist width whenever it changes (debounced via the resize end in mouseup)
+  useEffect(() => {
+    storeWidth(width);
+  }, [width]);
+
   const isAwaitingApproval = pendingPlanApproval !== null;
 
   return (
-    <div className="flex h-full w-[340px] shrink-0 flex-col border-l border-border/70 bg-card/50">
+    <div
+      className="relative flex h-full shrink-0 flex-col border-l border-border/70 bg-card/50"
+      style={{ width }}
+    >
+      {/* Resize handle on left edge */}
+      <div
+        data-plan-sidebar-resize
+        className="absolute left-0 top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
+        onMouseDown={onResizeMouseDown}
+      >
+        <div className="absolute left-0 top-1/2 -translate-y-1/2 text-muted-foreground/20 hover:text-muted-foreground/50 transition-colors pointer-events-none">
+          <GripVerticalIcon className="size-3" />
+        </div>
+      </div>
+
       {/* Header */}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/60 px-3">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/60 px-3 pl-4">
         <div className="flex items-center gap-2">
           <Badge
             variant="secondary"
@@ -320,7 +413,7 @@ const PlanSidebar = memo(function PlanSidebar({
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <p className="text-[13px] text-muted-foreground/40">No active plan yet.</p>
               <p className="mt-1 text-[11px] text-muted-foreground/30">
-                Plans will appear here when generated.
+                Plans and tasks will appear here when generated.
               </p>
             </div>
           ) : null}

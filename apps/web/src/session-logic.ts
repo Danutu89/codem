@@ -426,7 +426,6 @@ export function findLatestProposedPlan(
 
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
-  latestTurnId: TurnId | undefined,
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
 
@@ -443,7 +442,6 @@ export function deriveWorkLogEntries(
   }
 
   return ordered
-    .filter((activity) => (latestTurnId ? activity.turnId === latestTurnId : true))
     .filter((activity) => activity.kind !== "tool.started")
     .filter((activity) => {
       // Skip tool.completed entries when a tool.updated entry exists for the
@@ -467,6 +465,18 @@ export function deriveWorkLogEntries(
     })
     .filter((activity) => activity.kind !== "task.started" && activity.kind !== "task.completed")
     .filter((activity) => activity.summary !== "Checkpoint captured")
+    // Hide TodoWrite / TodoRead from the work log — their data is shown in the Plan sidebar instead.
+    .filter((activity) => {
+      const p = activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+      const d = asRecord(p?.data);
+      const tn = extractToolName(d, p);
+      if (tn === "TodoWrite" || tn === "TodoRead" || tn === "todowrite" || tn === "todo_write") {
+        return false;
+      }
+      return true;
+    })
     .map((activity) => {
       const payload =
         activity.payload && typeof activity.payload === "object"
@@ -678,12 +688,18 @@ export function deriveTimelineEntries(
     createdAt: proposedPlan.createdAt,
     proposedPlan,
   }));
-  const workRows: TimelineEntry[] = workEntries.map((entry) => ({
-    id: entry.id,
-    kind: "work",
-    createdAt: entry.createdAt,
-    entry,
-  }));
+  const workRows: TimelineEntry[] = workEntries
+    .filter((entry) => {
+      // TodoWrite / TodoRead are shown in the Plan sidebar — hide from conversation timeline.
+      const tn = entry.toolName?.toLowerCase();
+      return tn !== "todowrite" && tn !== "todo_write" && tn !== "todoread" && tn !== "todo_read";
+    })
+    .map((entry) => ({
+      id: entry.id,
+      kind: "work",
+      createdAt: entry.createdAt,
+      entry,
+    }));
   return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
     a.createdAt.localeCompare(b.createdAt),
   );

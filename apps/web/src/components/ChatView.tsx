@@ -5,6 +5,7 @@ import {
   EDITORS,
   type EditorId,
   type KeybindingCommand,
+  type ClaudeEffortLevel,
   type CodexReasoningEffort,
   type CursorReasoningOption,
   type MessageId,
@@ -25,6 +26,8 @@ import {
   ProviderInteractionMode,
 } from "@t3tools/contracts";
 import {
+  getClaudeEffortOptions,
+  getDefaultClaudeEffort,
   getDefaultModel,
   getDefaultReasoningEffort,
   getCursorModelCapabilities,
@@ -86,6 +89,8 @@ import {
   formatTimestamp,
 } from "../session-logic";
 import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollContainerNearBottom } from "../chat-scroll";
+import { utilizationColor } from "../hooks/useUsageInfo";
+import { formatTokenCount } from "./UsageInfo";
 import {
   buildPendingUserInputAnswers,
   derivePendingUserInputProgress,
@@ -164,6 +169,7 @@ import {
   XIcon,
   CopyIcon,
   CheckIcon,
+  GripVerticalIcon,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -221,7 +227,12 @@ import { Toggle } from "./ui/toggle";
 import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
-import { getAppModelOptions, getAppSettingsSnapshot, useAppSettings } from "../appSettings";
+import {
+  type McpServerEntry,
+  getAppModelOptions,
+  getAppSettingsSnapshot,
+  useAppSettings,
+} from "../appSettings";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
@@ -237,6 +248,52 @@ import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./Compose
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { estimateTimelineMessageHeight } from "./timelineHeight";
 import { useLiveBrowserStore } from "../liveBrowserStore";
+
+/**
+ * Convert client-side McpServerEntry[] to the Record<string, McpServerConfig>
+ * shape expected by the Claude Agent SDK's query options.
+ */
+function mcpServerEntriesToConfig(
+  entries: ReadonlyArray<McpServerEntry>,
+): Record<string, object> | undefined {
+  if (entries.length === 0) return undefined;
+  const result: Record<string, object> = {};
+  for (const entry of entries) {
+    const name = entry.name.trim();
+    if (!name) continue;
+    if (entry.transport === "stdio") {
+      const command = entry.command?.trim();
+      if (!command) continue;
+      const args = entry.args?.trim()
+        ? entry.args.trim().split(/\s+/).filter(Boolean)
+        : undefined;
+      const env =
+        entry.env && entry.env.filter((p) => p.key.trim()).length > 0
+          ? Object.fromEntries(entry.env.filter((p) => p.key.trim()).map((p) => [p.key, p.value]))
+          : undefined;
+      result[name] = {
+        command,
+        ...(args && args.length > 0 ? { args } : {}),
+        ...(env ? { env } : {}),
+      };
+    } else {
+      const url = entry.url?.trim();
+      if (!url) continue;
+      const headers =
+        entry.headers && entry.headers.filter((p) => p.key.trim()).length > 0
+          ? Object.fromEntries(
+              entry.headers.filter((p) => p.key.trim()).map((p) => [p.key, p.value]),
+            )
+          : undefined;
+      result[name] = {
+        type: entry.transport,
+        url,
+        ...(headers ? { headers } : {}),
+      };
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
 
 function formatMessageMeta(createdAt: string, duration: string | null): string {
   if (!duration) return formatTimestamp(createdAt);
@@ -441,6 +498,293 @@ function formatCompactToolInput(input: Record<string, unknown>, keys: string[]):
     }
     return `${k}: ${JSON.stringify(v)}`;
   }).join("\n");
+}
+
+/** Build a simple inline unified diff from old/new strings. */
+function buildSimpleDiff(oldStr: string, newStr: string): { removed: string[]; added: string[] } {
+  const oldLines = oldStr.split("\n");
+  const newLines = newStr.split("\n");
+  return { removed: oldLines, added: newLines };
+}
+
+/** Render expanded details for a tool call entry. */
+function ExpandedToolCallDetail({ workEntry }: { workEntry: { toolName?: string; toolInput?: Record<string, unknown>; detail?: string; command?: string; changedFiles?: ReadonlyArray<string> } }) {
+  const name = (workEntry.toolName ?? "").toLowerCase();
+  const input = workEntry.toolInput ?? {};
+
+  // ── Bash / Shell ──────────────────────────────────────────
+  if (name === "bash" || name.includes("bash") || name.includes("shell") || name.includes("terminal")) {
+    const cmd = typeof input.command === "string" ? input.command : null;
+    const timeout = typeof input.timeout === "number" ? input.timeout : null;
+    const desc = typeof input.description === "string" ? input.description : null;
+    return (
+      <div className="ml-[22px] mt-1.5 space-y-1.5" data-scroll-anchor-ignore>
+        {desc && (
+          <p className="text-[11px] italic text-muted-foreground/70">{desc}</p>
+        )}
+        {cmd && (
+          <div>
+            <p className="mb-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/50">Command</p>
+            <pre className="overflow-x-auto rounded-md border border-border/70 bg-zinc-900/90 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-emerald-300/90 whitespace-pre-wrap break-all">
+              {cmd}
+            </pre>
+          </div>
+        )}
+        {timeout != null && (
+          <p className="text-[10px] text-muted-foreground/50">Timeout: {timeout}ms</p>
+        )}
+        {workEntry.detail && (
+          <div>
+            <p className="mb-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/50">Output</p>
+            <pre className="max-h-[300px] overflow-auto rounded-md border border-border/70 bg-background/80 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
+              {workEntry.detail}
+            </pre>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Edit ──────────────────────────────────────────────────
+  if (name === "edit") {
+    const filePath = typeof input.file_path === "string" ? input.file_path : null;
+    const oldStr = typeof input.old_string === "string" ? input.old_string : null;
+    const newStr = typeof input.new_string === "string" ? input.new_string : null;
+    const replaceAll = input.replace_all === true;
+    return (
+      <div className="ml-[22px] mt-1.5 space-y-1.5" data-scroll-anchor-ignore>
+        {filePath && (
+          <p className="font-mono text-[11px] text-foreground/70">{filePath}</p>
+        )}
+        {replaceAll && (
+          <span className="rounded bg-amber-500/15 px-1.5 py-px text-[9px] font-medium text-amber-400/80">replace all</span>
+        )}
+        {oldStr !== null && newStr !== null ? (
+          <div className="overflow-hidden rounded-md border border-border/70">
+            {(() => {
+              const diff = buildSimpleDiff(oldStr, newStr);
+              return (
+                <div className="max-h-[400px] overflow-auto bg-background/80 font-mono text-[11px] leading-relaxed">
+                  {diff.removed.length > 0 && diff.removed.map((line, i) => (
+                    <div key={`r-${i}`} className="border-l-2 border-red-400/60 bg-red-500/10 px-2 py-px text-red-300/85">
+                      <span className="mr-2 select-none text-red-400/40">-</span>{line}
+                    </div>
+                  ))}
+                  {diff.added.length > 0 && diff.added.map((line, i) => (
+                    <div key={`a-${i}`} className="border-l-2 border-green-400/60 bg-green-500/10 px-2 py-px text-green-300/85">
+                      <span className="mr-2 select-none text-green-400/40">+</span>{line}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+        ) : workEntry.detail ? (
+          <pre className="max-h-[300px] overflow-auto rounded-md border border-border/70 bg-background/80 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
+            {workEntry.detail}
+          </pre>
+        ) : null}
+      </div>
+    );
+  }
+
+  // ── Write ─────────────────────────────────────────────────
+  if (name === "write") {
+    const filePath = typeof input.file_path === "string" ? input.file_path : null;
+    const content = typeof input.content === "string" ? input.content : null;
+    return (
+      <div className="ml-[22px] mt-1.5 space-y-1.5" data-scroll-anchor-ignore>
+        {filePath && (
+          <p className="font-mono text-[11px] text-foreground/70">{filePath}</p>
+        )}
+        {content && (
+          <div>
+            <p className="mb-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+              Content ({content.length.toLocaleString()} chars)
+            </p>
+            <pre className="max-h-[400px] overflow-auto rounded-md border border-border/70 bg-background/80 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
+              {content.length > 5000 ? `${content.slice(0, 5000)}\n\n... (${(content.length - 5000).toLocaleString()} more chars)` : content}
+            </pre>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Read ──────────────────────────────────────────────────
+  if (name === "read") {
+    const filePath = typeof input.file_path === "string" ? input.file_path : null;
+    const offset = typeof input.offset === "number" ? input.offset : null;
+    const limit = typeof input.limit === "number" ? input.limit : null;
+    return (
+      <div className="ml-[22px] mt-1.5 space-y-1" data-scroll-anchor-ignore>
+        {filePath && (
+          <p className="font-mono text-[11px] text-foreground/70">{filePath}</p>
+        )}
+        {(offset != null || limit != null) && (
+          <p className="text-[10px] text-muted-foreground/55">
+            {offset != null && `offset: ${offset}`}
+            {offset != null && limit != null && " | "}
+            {limit != null && `limit: ${limit}`}
+          </p>
+        )}
+        {workEntry.detail && (
+          <pre className="max-h-[300px] overflow-auto rounded-md border border-border/70 bg-background/80 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
+            {workEntry.detail}
+          </pre>
+        )}
+      </div>
+    );
+  }
+
+  // ── Glob ──────────────────────────────────────────────────
+  if (name === "glob") {
+    const pattern = typeof input.pattern === "string" ? input.pattern : null;
+    const path = typeof input.path === "string" ? input.path : null;
+    return (
+      <div className="ml-[22px] mt-1.5 space-y-1" data-scroll-anchor-ignore>
+        <div className="flex flex-wrap items-center gap-2">
+          {pattern && (
+            <span className="rounded bg-muted-foreground/10 px-1.5 py-px font-mono text-[10px] text-foreground/70">{pattern}</span>
+          )}
+          {path && (
+            <span className="text-[10px] text-muted-foreground/55">in {path}</span>
+          )}
+        </div>
+        {workEntry.detail && (
+          <pre className="max-h-[300px] overflow-auto rounded-md border border-border/70 bg-background/80 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
+            {workEntry.detail}
+          </pre>
+        )}
+      </div>
+    );
+  }
+
+  // ── Grep ──────────────────────────────────────────────────
+  if (name === "grep") {
+    const pattern = typeof input.pattern === "string" ? input.pattern : null;
+    const path = typeof input.path === "string" ? input.path : null;
+    const glob = typeof input.glob === "string" ? input.glob : null;
+    const outputMode = typeof input.output_mode === "string" ? input.output_mode : null;
+    return (
+      <div className="ml-[22px] mt-1.5 space-y-1" data-scroll-anchor-ignore>
+        <div className="flex flex-wrap items-center gap-2">
+          {pattern && (
+            <span className="rounded bg-muted-foreground/10 px-1.5 py-px font-mono text-[10px] text-foreground/70">/{pattern}/</span>
+          )}
+          {path && (
+            <span className="text-[10px] text-muted-foreground/55">in {path}</span>
+          )}
+          {glob && (
+            <span className="text-[10px] text-muted-foreground/55">glob: {glob}</span>
+          )}
+          {outputMode && (
+            <span className="rounded bg-muted-foreground/8 px-1 py-px text-[9px] text-muted-foreground/50">{outputMode}</span>
+          )}
+        </div>
+        {workEntry.detail && (
+          <pre className="max-h-[300px] overflow-auto rounded-md border border-border/70 bg-background/80 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
+            {workEntry.detail}
+          </pre>
+        )}
+      </div>
+    );
+  }
+
+  // ── Agent ─────────────────────────────────────────────────
+  if (name === "agent") {
+    const desc = typeof input.description === "string" ? input.description : null;
+    const prompt = typeof input.prompt === "string" ? input.prompt : null;
+    const subagentType = typeof input.subagent_type === "string" ? input.subagent_type : null;
+    return (
+      <div className="ml-[22px] mt-1.5 space-y-1.5" data-scroll-anchor-ignore>
+        <div className="flex flex-wrap items-center gap-2">
+          {subagentType && (
+            <span className="rounded bg-violet-500/15 px-1.5 py-px text-[9px] font-medium text-violet-400/80">{subagentType}</span>
+          )}
+          {desc && (
+            <span className="text-[11px] text-foreground/70">{desc}</span>
+          )}
+        </div>
+        {prompt && (
+          <div>
+            <p className="mb-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/50">Prompt</p>
+            <pre className="max-h-[300px] overflow-auto rounded-md border border-border/70 bg-background/80 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
+              {prompt.length > 3000 ? `${prompt.slice(0, 3000)}\n\n... (${(prompt.length - 3000).toLocaleString()} more chars)` : prompt}
+            </pre>
+          </div>
+        )}
+        {workEntry.detail && (
+          <div>
+            <p className="mb-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/50">Result</p>
+            <pre className="max-h-[300px] overflow-auto rounded-md border border-border/70 bg-background/80 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
+              {workEntry.detail}
+            </pre>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── WebSearch / WebFetch ───────────────────────────────────
+  if (name === "websearch" || name === "web_search" || name === "webfetch" || name === "web_fetch") {
+    const query = typeof input.query === "string" ? input.query : null;
+    const url = typeof input.url === "string" ? input.url : null;
+    return (
+      <div className="ml-[22px] mt-1.5 space-y-1" data-scroll-anchor-ignore>
+        {query && (
+          <p className="text-[11px] text-foreground/70">Query: <span className="font-mono">{query}</span></p>
+        )}
+        {url && (
+          <p className="font-mono text-[11px] text-foreground/70 break-all">{url}</p>
+        )}
+        {workEntry.detail && (
+          <pre className="max-h-[300px] overflow-auto rounded-md border border-border/70 bg-background/80 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
+            {workEntry.detail}
+          </pre>
+        )}
+      </div>
+    );
+  }
+
+  // ── Generic fallback ──────────────────────────────────────
+  const inputKeys = Object.keys(input).filter((k) => input[k] !== undefined && input[k] !== null);
+  return (
+    <div className="ml-[22px] mt-1.5 space-y-1" data-scroll-anchor-ignore>
+      {inputKeys.length > 0 && (
+        <div>
+          <p className="mb-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/50">Input</p>
+          <pre className="max-h-[300px] overflow-auto rounded-md border border-border/70 bg-background/80 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
+            {inputKeys.map((k) => {
+              const v = input[k];
+              if (typeof v === "string" && v.length > 500) return `${k}: ${v.slice(0, 500)}...`;
+              return `${k}: ${typeof v === "object" ? JSON.stringify(v, null, 2) : String(v)}`;
+            }).join("\n")}
+          </pre>
+        </div>
+      )}
+      {workEntry.detail && (
+        <div>
+          <p className="mb-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/50">Detail</p>
+          <pre className="max-h-[300px] overflow-auto rounded-md border border-border/70 bg-background/80 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
+            {workEntry.detail}
+          </pre>
+        </div>
+      )}
+      {workEntry.changedFiles && workEntry.changedFiles.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1">
+          {workEntry.changedFiles.map((filePath) => (
+            <span
+              key={filePath}
+              className="rounded-md border border-border/70 bg-background/65 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/85"
+            >
+              {filePath}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function downloadTextFile(filename: string, contents: string): void {
@@ -764,6 +1108,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const setComposerDraftRuntimeMode = useComposerDraftStore((store) => store.setRuntimeMode);
   const setComposerDraftInteractionMode = useComposerDraftStore((store) => store.setInteractionMode);
   const setComposerDraftEffort = useComposerDraftStore((store) => store.setEffort);
+  const setComposerDraftClaudeEffort = useComposerDraftStore((store) => store.setClaudeEffort);
   const setComposerDraftCodexFastMode = useComposerDraftStore((store) => store.setCodexFastMode);
   const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
@@ -789,6 +1134,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     (store) => store.draftThreadsByThreadId[threadId] ?? null,
   );
   const promptRef = useRef(prompt);
+  const onSendRef = useRef<() => void>(() => {});
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
 
@@ -818,6 +1164,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
     useState<Record<string, number>>({});
   const [expandedWorkGroups, setExpandedWorkGroups] = useState<Record<string, boolean>>({});
+  const [expandedWorkEntries, setExpandedWorkEntries] = useState<Record<string, boolean>>({});
+  const [worklogPanelOpen, setWorklogPanelOpen] = useState(true);
+  const [worklogPanelWidth, setWorklogPanelWidth] = useState(280);
+  const worklogResizeDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [planSidebarOpen, setPlanSidebarOpen] = useState(false);
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
   // Tracks whether the user explicitly dismissed the sidebar for the active turn.
@@ -1084,29 +1434,45 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const reasoningOptions = getReasoningEffortOptions(selectedProvider);
   const supportsReasoningEffort = reasoningOptions.length > 0;
   const selectedEffort = composerDraft.effort ?? getDefaultReasoningEffort(selectedProvider);
+  const claudeEffortOptions = getClaudeEffortOptions(selectedProvider);
+  const supportsClaudeEffort = claudeEffortOptions.length > 0;
+  const selectedClaudeEffort = composerDraft.claudeEffort ?? getDefaultClaudeEffort(selectedProvider);
   const selectedCodexFastModeEnabled =
     selectedProvider === "codex" ? composerDraft.codexFastMode : false;
   const selectedModelOptionsForDispatch = useMemo(() => {
-    if (selectedProvider !== "codex") {
-      return undefined;
+    if (selectedProvider === "codex") {
+      const codexOptions = {
+        ...(supportsReasoningEffort && selectedEffort ? { reasoningEffort: selectedEffort } : {}),
+        ...(selectedCodexFastModeEnabled ? { fastMode: true } : {}),
+      };
+      return Object.keys(codexOptions).length > 0 ? { codex: codexOptions } : undefined;
     }
-    const codexOptions = {
-      ...(supportsReasoningEffort && selectedEffort ? { reasoningEffort: selectedEffort } : {}),
-      ...(selectedCodexFastModeEnabled ? { fastMode: true } : {}),
-    };
-    return Object.keys(codexOptions).length > 0 ? { codex: codexOptions } : undefined;
-  }, [selectedCodexFastModeEnabled, selectedEffort, selectedProvider, supportsReasoningEffort]);
+    if (selectedProvider === "claudeCode") {
+      const claudeOptions = {
+        ...(supportsClaudeEffort && selectedClaudeEffort ? { effort: selectedClaudeEffort } : {}),
+      };
+      return Object.keys(claudeOptions).length > 0 ? { claudeCode: claudeOptions } : undefined;
+    }
+    return undefined;
+  }, [selectedCodexFastModeEnabled, selectedEffort, selectedClaudeEffort, selectedProvider, supportsReasoningEffort, supportsClaudeEffort]);
   const providerOptionsForDispatch = useMemo(() => {
-    if (!settings.codexBinaryPath && !settings.codexHomePath) {
-      return undefined;
-    }
+    const codexOpts =
+      settings.codexBinaryPath || settings.codexHomePath
+        ? {
+            ...(settings.codexBinaryPath ? { binaryPath: settings.codexBinaryPath } : {}),
+            ...(settings.codexHomePath ? { homePath: settings.codexHomePath } : {}),
+          }
+        : undefined;
+
+    const mcpServers = mcpServerEntriesToConfig(settings.mcpServers);
+    const claudeCodeOpts = mcpServers ? { mcpServers } : undefined;
+
+    if (!codexOpts && !claudeCodeOpts) return undefined;
     return {
-      codex: {
-        ...(settings.codexBinaryPath ? { binaryPath: settings.codexBinaryPath } : {}),
-        ...(settings.codexHomePath ? { homePath: settings.codexHomePath } : {}),
-      },
+      ...(codexOpts ? { codex: codexOpts } : {}),
+      ...(claudeCodeOpts ? { claudeCode: claudeCodeOpts } : {}),
     };
-  }, [settings.codexBinaryPath, settings.codexHomePath]);
+  }, [settings.codexBinaryPath, settings.codexHomePath, settings.mcpServers]);
   const selectedCursorModel = useMemo(
     () => (selectedProvider === "cursor" ? parseCursorModelSelection(selectedModel) : null),
     [selectedModel, selectedProvider],
@@ -1171,8 +1537,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(
-    () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
-    [activeLatestTurn?.turnId, threadActivities],
+    () => deriveWorkLogEntries(threadActivities),
+    [threadActivities],
   );
   const latestTurnHasToolActivity = useMemo(
     () => hasToolActivityForTurn(threadActivities, activeLatestTurn?.turnId),
@@ -1390,8 +1756,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
   }, [serverMessages, attachmentPreviewHandoffByMessageId, optimisticUserMessages]);
   const timelineEntries = useMemo(
     () =>
-      deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
-    [activeThread?.proposedPlans, timelineMessages, workLogEntries],
+      deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], []),
+    [activeThread?.proposedPlans, timelineMessages],
   );
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
@@ -1405,36 +1771,30 @@ export default function ChatView({ threadId }: ChatViewProps) {
   }, [turnDiffSummaries]);
   const revertTurnCountByUserMessageId = useMemo(() => {
     const byUserMessageId = new Map<MessageId, number>();
-    for (let index = 0; index < timelineEntries.length; index += 1) {
-      const entry = timelineEntries[index];
-      if (!entry || entry.kind !== "message" || entry.message.role !== "user") {
-        continue;
-      }
-
-      for (let nextIndex = index + 1; nextIndex < timelineEntries.length; nextIndex += 1) {
-        const nextEntry = timelineEntries[nextIndex];
-        if (!nextEntry || nextEntry.kind !== "message") {
-          continue;
+    let userMessageIndex = 0;
+    for (const entry of timelineEntries) {
+      if (entry.kind !== "message" || entry.message.role !== "user") continue;
+      byUserMessageId.set(entry.message.id, userMessageIndex);
+      userMessageIndex += 1;
+    }
+    // Remove the last user message — nothing after it to discard when it's the latest turn
+    if (userMessageIndex > 0) {
+      const lastUserEntry = [...timelineEntries]
+        .reverse()
+        .find((e) => e.kind === "message" && e.message.role === "user");
+      if (lastUserEntry && lastUserEntry.kind === "message") {
+        // Only keep the rewind option if there's an assistant response after this message
+        const lastUserIdx = timelineEntries.indexOf(lastUserEntry);
+        const hasFollowingAssistant = timelineEntries
+          .slice(lastUserIdx + 1)
+          .some((e) => e.kind === "message" && e.message.role === "assistant");
+        if (!hasFollowingAssistant) {
+          byUserMessageId.delete(lastUserEntry.message.id);
         }
-        if (nextEntry.message.role === "user") {
-          break;
-        }
-        const summary = turnDiffSummaryByAssistantMessageId.get(nextEntry.message.id);
-        if (!summary) {
-          continue;
-        }
-        const turnCount =
-          summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId];
-        if (typeof turnCount !== "number") {
-          break;
-        }
-        byUserMessageId.set(entry.message.id, Math.max(0, turnCount - 1));
-        break;
       }
     }
-
     return byUserMessageId;
-  }, [inferredCheckpointTurnCountByTurnId, timelineEntries, turnDiffSummaryByAssistantMessageId]);
+  }, [timelineEntries]);
 
   const completionSummary = useMemo(() => {
     if (!latestTurnSettled) return null;
@@ -1537,6 +1897,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
           command: "default",
           label: "/default",
           description: "Switch this thread back to normal chat mode",
+        },
+        {
+          id: "slash:compact",
+          type: "slash-command",
+          command: "compact",
+          label: "/compact",
+          description: "Summarize conversation to free up context window",
         },
       ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
       const query = composerTrigger.query.trim().toLowerCase();
@@ -2040,6 +2407,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
     setPlanSidebarOpen(true);
   }, [pendingPlanApproval]);
 
+  // Auto-open plan sidebar when active plan steps appear (from TodoWrite)
+  useEffect(() => {
+    if (!activePlan || activePlan.steps.length === 0) return;
+    const turnKey = activePlan.turnId;
+    if (planSidebarDismissedForTurnRef.current === turnKey) return;
+    setPlanSidebarOpen(true);
+  }, [activePlan]);
+
   const persistThreadSettingsForNextTurn = useCallback(
     async (input: {
       threadId: ThreadId;
@@ -2300,6 +2675,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
   useEffect(() => {
     setExpandedWorkGroups({});
+    setExpandedWorkEntries({});
     setPullRequestDialogState(null);
     if (planSidebarOpenOnNextThreadRef.current) {
       planSidebarOpenOnNextThreadRef.current = false;
@@ -2791,12 +3167,24 @@ export default function ChatView({ threadId }: ChatViewProps) {
         setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
         return;
       }
+      const hasCheckpointsAfterTarget = turnDiffSummaries.some((summary) => {
+        const cpTurnCount =
+          summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId];
+        return typeof cpTurnCount === "number" && cpTurnCount > turnCount;
+      });
       const confirmed = await api.dialogs.confirm(
-        [
-          `Revert this thread to checkpoint ${turnCount}?`,
-          "This will discard newer messages and turn diffs in this thread.",
-          "This action cannot be undone.",
-        ].join("\n"),
+        hasCheckpointsAfterTarget
+          ? [
+              `Revert this thread to turn ${turnCount}?`,
+              "This will discard newer messages and undo file changes.",
+              "This action cannot be undone.",
+            ].join("\n")
+          : [
+              `Rewind this thread to turn ${turnCount}?`,
+              "This will discard newer messages.",
+              "File changes will NOT be reverted.",
+              "This action cannot be undone.",
+            ].join("\n"),
       );
       if (!confirmed) {
         return;
@@ -2820,7 +3208,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
       setIsRevertingCheckpoint(false);
     },
-    [activeThread, isConnecting, isRevertingCheckpoint, isSendBusy, phase, setThreadError],
+    [activeThread, inferredCheckpointTurnCountByTurnId, isConnecting, isRevertingCheckpoint, isSendBusy, phase, setThreadError, turnDiffSummaries],
   );
 
   const onSend = async (e?: { preventDefault: () => void }) => {
@@ -3129,6 +3517,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       resetSendPhase();
     }
   };
+  onSendRef.current = onSend;
 
   const onInterrupt = async () => {
     const api = readNativeApi();
@@ -3617,6 +4006,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
     },
     [scheduleComposerFocus, setComposerDraftEffort, threadId],
   );
+  const onClaudeEffortSelect = useCallback(
+    (effort: ClaudeEffortLevel) => {
+      setComposerDraftClaudeEffort(threadId, effort);
+      scheduleComposerFocus();
+    },
+    [scheduleComposerFocus, setComposerDraftClaudeEffort, threadId],
+  );
   const onCodexFastModeChange = useCallback(
     (enabled: boolean) => {
       setComposerDraftCodexFastMode(threadId, enabled);
@@ -3726,6 +4122,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
           });
           if (applied) {
             setComposerHighlightedItemId(null);
+          }
+          return;
+        }
+        if (item.command === "compact") {
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "/compact", {
+            expectedText: expectedToken,
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
+            // Auto-submit /compact so it's sent to the server immediately
+            setTimeout(() => onSendRef.current(), 0);
           }
           return;
         }
@@ -3849,6 +4256,32 @@ export default function ChatView({ threadId }: ChatViewProps) {
       [groupId]: !existing[groupId],
     }));
   }, []);
+  const onToggleWorkEntry = useCallback((entryId: string) => {
+    setExpandedWorkEntries((existing) => ({
+      ...existing,
+      [entryId]: !existing[entryId],
+    }));
+  }, []);
+  const onWorklogResizeMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      worklogResizeDragRef.current = { startX: e.clientX, startWidth: worklogPanelWidth };
+      const onMouseMove = (ev: MouseEvent) => {
+        if (!worklogResizeDragRef.current) return;
+        const delta = ev.clientX - worklogResizeDragRef.current.startX;
+        const next = Math.max(180, Math.min(600, worklogResizeDragRef.current.startWidth + delta));
+        setWorklogPanelWidth(next);
+      };
+      const onMouseUp = () => {
+        worklogResizeDragRef.current = null;
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+      };
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
+    },
+    [worklogPanelWidth],
+  );
   const onExpandTimelineImage = useCallback((preview: ExpandedImagePreview) => {
     setExpandedImage(preview);
   }, []);
@@ -3945,6 +4378,118 @@ export default function ChatView({ threadId }: ChatViewProps) {
       />
       {/* Main content area with optional plan sidebar */}
       <div className="flex min-h-0 min-w-0 flex-1">
+        {/* Left worklog panel */}
+        {workLogEntries.length > 0 && (
+          worklogPanelOpen ? (
+            <div
+              className="relative flex shrink-0 flex-col border-r border-border min-h-0"
+              style={{ width: worklogPanelWidth }}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between border-b border-border/60 px-3 py-2">
+                <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground/65">
+                  Tool Calls
+                </p>
+                <button
+                  type="button"
+                  title="Închide panelul"
+                  className="rounded p-0.5 text-muted-foreground/40 transition-colors hover:bg-muted/50 hover:text-muted-foreground/80"
+                  onClick={() => setWorklogPanelOpen(false)}
+                >
+                  <ChevronLeftIcon className="size-3.5" />
+                </button>
+              </div>
+              {/* Entries */}
+              <div className="flex-1 space-y-1 overflow-x-hidden overflow-y-auto px-2 py-2">
+                {workLogEntries.map((entry) => {
+                  const toolDetail = formatToolDetail(entry);
+                  const strippedLabel = entry.toolName
+                    ? entry.label.replace(/^(Command run|File change|Tool call|MCP tool call|Item)\s*/i, "")
+                    : entry.label;
+                  const showLabelText = !toolDetail;
+                  const isMultiLineDetail = toolDetail ? toolDetail.includes("\n") : false;
+                  return (
+                    <div key={entry.id} className="rounded-md border border-border/60 bg-card/40 px-2 py-1.5">
+                      <div className="flex items-start gap-1.5">
+                        <span className="mt-[6px] h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/30" />
+                        <div className="min-w-0 flex-1">
+                          <p className={`text-[11px] leading-relaxed ${workToneClass(entry.tone)}`}>
+                            {entry.toolName && (
+                              <span className="mr-1 inline-block rounded bg-muted-foreground/10 px-1.5 py-px font-mono text-[10px] font-medium text-foreground/70">
+                                {entry.toolName}
+                              </span>
+                            )}
+                            {showLabelText && strippedLabel}
+                            {toolDetail && !isMultiLineDetail && (
+                              <span className="font-mono text-foreground/75 break-all">{toolDetail}</span>
+                            )}
+                          </p>
+                          {toolDetail && isMultiLineDetail && (
+                            <pre className="mt-1 overflow-x-auto rounded border border-border/70 bg-background/80 px-1.5 py-1 font-mono text-[10px] leading-relaxed text-foreground/75 whitespace-pre-wrap break-all">
+                              {toolDetail}
+                            </pre>
+                          )}
+                          {!toolDetail && entry.command && (
+                            <pre className="mt-1 overflow-x-auto rounded border border-border/70 bg-background/80 px-1.5 py-1 font-mono text-[10px] leading-relaxed text-foreground/75">
+                              {entry.command}
+                            </pre>
+                          )}
+                          {entry.changedFiles && entry.changedFiles.length > 0 && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {entry.changedFiles.slice(0, 3).map((filePath) => (
+                                <span
+                                  key={`${entry.id}:${filePath}`}
+                                  className="rounded border border-border/70 bg-background/65 px-1 py-0.5 font-mono text-[9px] text-muted-foreground/80"
+                                  title={filePath}
+                                >
+                                  {filePath}
+                                </span>
+                              ))}
+                              {entry.changedFiles.length > 3 && (
+                                <span className="px-0.5 text-[9px] text-muted-foreground/60">
+                                  +{entry.changedFiles.length - 3}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {/* Resize handle */}
+              <div
+                className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
+                onMouseDown={onWorklogResizeMouseDown}
+              >
+                <div className="absolute right-0 top-1/2 -translate-y-1/2 -translate-x-0.5 text-muted-foreground/20 hover:text-muted-foreground/50 transition-colors pointer-events-none">
+                  <GripVerticalIcon className="size-3" />
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Collapsed strip */
+            <div className="flex w-7 shrink-0 flex-col items-center border-r border-border py-2 gap-2">
+              <button
+                type="button"
+                title="Deschide panelul Tool Calls"
+                className="rounded p-0.5 text-muted-foreground/40 transition-colors hover:bg-muted/50 hover:text-muted-foreground/80"
+                onClick={() => setWorklogPanelOpen(true)}
+              >
+                <ChevronRightIcon className="size-3.5" />
+              </button>
+              <div className="flex flex-1 items-center justify-center">
+                <span
+                  className="text-[9px] font-medium uppercase tracking-[0.14em] text-muted-foreground/30"
+                  style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
+                >
+                  Tool Calls
+                </span>
+              </div>
+            </div>
+          )
+        )}
         {/* Chat column */}
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           <PlanModePanel activePlan={activePlan} />
@@ -3982,7 +4527,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
               turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
               nowIso={nowIso}
               expandedWorkGroups={expandedWorkGroups}
+              expandedWorkEntries={expandedWorkEntries}
               onToggleWorkGroup={onToggleWorkGroup}
+              onToggleWorkEntry={onToggleWorkEntry}
               onOpenTurnDiff={onOpenTurnDiff}
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
               onRevertUserMessage={onRevertUserMessage}
@@ -4174,21 +4721,27 @@ export default function ChatView({ threadId }: ChatViewProps) {
                       />
 
                       {isComposerFooterCompact ? (
-                        <CompactComposerControlsMenu
-                          activePlan={Boolean(activePlan || activeProposedPlan || pendingPlanApproval || lastApprovedPlanMarkdown || planSidebarOpen)}
-                          interactionMode={interactionMode}
-                          planSidebarOpen={planSidebarOpen}
-                          runtimeMode={runtimeMode}
-                          selectedEffort={selectedEffort}
-                          selectedProvider={selectedProvider}
-                          selectedCodexFastModeEnabled={selectedCodexFastModeEnabled}
-                          reasoningOptions={reasoningOptions}
-                          onEffortSelect={onEffortSelect}
-                          onCodexFastModeChange={onCodexFastModeChange}
-                          onToggleInteractionMode={toggleInteractionMode}
-                          onTogglePlanSidebar={togglePlanSidebar}
-                          onToggleRuntimeMode={toggleRuntimeMode}
-                        />
+                        <>
+                          <CompactComposerControlsMenu
+                            activePlan={Boolean(activePlan || activeProposedPlan || pendingPlanApproval || lastApprovedPlanMarkdown || planSidebarOpen)}
+                            interactionMode={interactionMode}
+                            planSidebarOpen={planSidebarOpen}
+                            runtimeMode={runtimeMode}
+                            selectedEffort={selectedEffort}
+                            selectedClaudeEffort={selectedClaudeEffort}
+                            selectedProvider={selectedProvider}
+                            selectedCodexFastModeEnabled={selectedCodexFastModeEnabled}
+                            reasoningOptions={reasoningOptions}
+                            claudeEffortOptions={claudeEffortOptions}
+                            onEffortSelect={onEffortSelect}
+                            onClaudeEffortSelect={onClaudeEffortSelect}
+                            onCodexFastModeChange={onCodexFastModeChange}
+                            onToggleInteractionMode={toggleInteractionMode}
+                            onTogglePlanSidebar={togglePlanSidebar}
+                            onToggleRuntimeMode={toggleRuntimeMode}
+                          />
+                          <ContextWindowRing contextWindow={activeThread?.session?.contextWindow} />
+                        </>
                       ) : (
                         <>
                           {selectedProvider === "codex" && selectedEffort != null ? (
@@ -4203,6 +4756,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                 options={reasoningOptions}
                                 onEffortChange={onEffortSelect}
                                 onFastModeChange={onCodexFastModeChange}
+                              />
+                            </>
+                          ) : null}
+                          {selectedProvider === "claudeCode" && selectedClaudeEffort != null ? (
+                            <>
+                              <Separator
+                                orientation="vertical"
+                                className="mx-0.5 hidden h-4 sm:block"
+                              />
+                              <ClaudeCodeTraitsPicker
+                                effort={selectedClaudeEffort}
+                                options={claudeEffortOptions}
+                                onEffortChange={onClaudeEffortSelect}
                               />
                             </>
                           ) : null}
@@ -4229,6 +4795,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
                               {interactionMode === "plan" ? "Plan" : "Chat"}
                             </span>
                           </Button>
+
+                          <ContextWindowRing contextWindow={activeThread?.session?.contextWindow} />
 
                           <Separator
                             orientation="vertical"
@@ -5483,7 +6051,9 @@ interface MessagesTimelineProps {
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
   nowIso: string;
   expandedWorkGroups: Record<string, boolean>;
+  expandedWorkEntries: Record<string, boolean>;
   onToggleWorkGroup: (groupId: string) => void;
+  onToggleWorkEntry: (entryId: string) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
@@ -5538,7 +6108,9 @@ const MessagesTimeline = memo(function MessagesTimeline({
   turnDiffSummaryByAssistantMessageId,
   nowIso,
   expandedWorkGroups,
+  expandedWorkEntries,
   onToggleWorkGroup,
+  onToggleWorkEntry,
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
@@ -5809,59 +6381,82 @@ const MessagesTimeline = memo(function MessagesTimeline({
                   const showLabelText = !toolDetail;
                   // For multi-line details (like Edit diffs), use a pre block; for single-line, show inline after badge.
                   const isMultiLineDetail = toolDetail ? toolDetail.includes("\n") : false;
+                  const isEntryExpanded = expandedWorkEntries[workEntry.id] ?? false;
+                  const hasExpandableContent = workEntry.toolName && workEntry.toolInput;
                   return (
-                    <div key={`work-row:${workEntry.id}`} className="flex items-start gap-2 py-0.5">
-                      <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/30" />
-                      <div className="min-w-0 flex-1 py-[2px]">
-                        <p className={`text-[11px] leading-relaxed ${workToneClass(workEntry.tone)}`}>
-                          {workEntry.toolName && (
-                            <span className="mr-1.5 inline-block rounded bg-muted-foreground/10 px-1.5 py-px font-mono text-[10px] font-medium text-foreground/70">
-                              {workEntry.toolName}
-                            </span>
-                          )}
-                          {showLabelText && strippedLabel}
-                          {toolDetail && !isMultiLineDetail && (
-                            <span className="font-mono text-foreground/75">{toolDetail}</span>
-                          )}
-                        </p>
-                        {toolDetail && isMultiLineDetail && (
+                    <div key={`work-row:${workEntry.id}`} className="py-0.5">
+                      <button
+                        type="button"
+                        className={`flex w-full items-start gap-2 text-left transition-colors duration-100 rounded-md px-1 -mx-1 ${hasExpandableContent ? "cursor-pointer hover:bg-muted/40" : "cursor-default"}`}
+                        onClick={() => {
+                          if (hasExpandableContent) onToggleWorkEntry(workEntry.id);
+                        }}
+                        tabIndex={hasExpandableContent ? 0 : -1}
+                      >
+                        <span className={`mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full transition-colors duration-150 ${isEntryExpanded ? "bg-primary/60" : "bg-muted-foreground/30"}`} />
+                        <div className="min-w-0 flex-1 py-[2px]">
+                          <p className={`text-[11px] leading-relaxed ${workToneClass(workEntry.tone)}`}>
+                            {workEntry.toolName && (
+                              <span className="mr-1.5 inline-block rounded bg-muted-foreground/10 px-1.5 py-px font-mono text-[10px] font-medium text-foreground/70">
+                                {workEntry.toolName}
+                              </span>
+                            )}
+                            {showLabelText && strippedLabel}
+                            {toolDetail && !isMultiLineDetail && (
+                              <span className="font-mono text-foreground/75">{toolDetail}</span>
+                            )}
+                            {hasExpandableContent && (
+                              <span className={`ml-1.5 inline-block text-[9px] text-muted-foreground/45 transition-transform duration-150 ${isEntryExpanded ? "rotate-90" : ""}`}>
+                                &#9654;
+                              </span>
+                            )}
+                          </p>
+                        </div>
+                      </button>
+                      {!isEntryExpanded && toolDetail && isMultiLineDetail && (
+                        <div className="ml-[22px]">
                           <pre className="mt-1 overflow-x-auto rounded-md border border-border/70 bg-background/80 px-2 py-1 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-all">
                             {toolDetail}
                           </pre>
-                        )}
-                        {!toolDetail && workEntry.command && (
+                        </div>
+                      )}
+                      {!isEntryExpanded && !toolDetail && workEntry.command && (
+                        <div className="ml-[22px]">
                           <pre className="mt-1 overflow-x-auto rounded-md border border-border/70 bg-background/80 px-2 py-1 font-mono text-[11px] leading-relaxed text-foreground/80">
                             {workEntry.command}
                           </pre>
-                        )}
-                        {workEntry.changedFiles && workEntry.changedFiles.length > 0 && (
-                          <div className="mt-1 flex flex-wrap gap-1">
-                            {workEntry.changedFiles.slice(0, 6).map((filePath) => (
-                              <span
-                                key={`${workEntry.id}:${filePath}`}
-                                className="rounded-md border border-border/70 bg-background/65 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/85"
-                                title={filePath}
-                              >
-                                {filePath}
-                              </span>
-                            ))}
-                            {workEntry.changedFiles.length > 6 && (
-                              <span className="px-1 text-[10px] text-muted-foreground/65">
-                                +{workEntry.changedFiles.length - 6} more
-                              </span>
-                            )}
-                          </div>
-                        )}
-                        {!toolDetail && workEntry.detail &&
-                          (!workEntry.command || workEntry.detail !== workEntry.command) && (
-                            <p
-                              className="mt-1 text-[11px] leading-relaxed text-muted-foreground/75"
-                              title={workEntry.detail}
+                        </div>
+                      )}
+                      {!isEntryExpanded && workEntry.changedFiles && workEntry.changedFiles.length > 0 && (
+                        <div className="ml-[22px] mt-1 flex flex-wrap gap-1">
+                          {workEntry.changedFiles.slice(0, 6).map((filePath) => (
+                            <span
+                              key={`${workEntry.id}:${filePath}`}
+                              className="rounded-md border border-border/70 bg-background/65 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/85"
+                              title={filePath}
                             >
-                              {workEntry.detail}
-                            </p>
+                              {filePath}
+                            </span>
+                          ))}
+                          {workEntry.changedFiles.length > 6 && (
+                            <span className="px-1 text-[10px] text-muted-foreground/65">
+                              +{workEntry.changedFiles.length - 6} more
+                            </span>
                           )}
-                      </div>
+                        </div>
+                      )}
+                      {!isEntryExpanded && !toolDetail && workEntry.detail &&
+                        (!workEntry.command || workEntry.detail !== workEntry.command) && (
+                          <p
+                            className="ml-[22px] mt-1 text-[11px] leading-relaxed text-muted-foreground/75"
+                            title={workEntry.detail}
+                          >
+                            {workEntry.detail}
+                          </p>
+                        )}
+                      {isEntryExpanded && hasExpandableContent && (
+                        <ExpandedToolCallDetail workEntry={workEntry} />
+                      )}
                     </div>
                   );
                 })}
@@ -6327,27 +6922,111 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   );
 });
 
+// ── Context Window Ring ──────────────────────────────────────────────
+
+const CONTEXT_RING_SIZE = 20;
+const CONTEXT_RING_STROKE = 2.5;
+const CONTEXT_RING_RADIUS = (CONTEXT_RING_SIZE - CONTEXT_RING_STROKE) / 2;
+const CONTEXT_RING_CIRCUMFERENCE = 2 * Math.PI * CONTEXT_RING_RADIUS;
+
+function contextRingColor(percent: number): string {
+  if (percent >= 90) return "stroke-red-400";
+  if (percent >= 70) return "stroke-amber-400";
+  return "stroke-emerald-400";
+}
+
+const ContextWindowRing = memo(function ContextWindowRing(props: {
+  contextWindow?: { usedTokens: number; maxTokens: number } | undefined;
+}) {
+  const ctx = props.contextWindow;
+  if (!ctx || ctx.usedTokens <= 0) return null;
+
+  const percent = Math.min(100, (ctx.usedTokens / ctx.maxTokens) * 100);
+  const offset = CONTEXT_RING_CIRCUMFERENCE - (percent / 100) * CONTEXT_RING_CIRCUMFERENCE;
+  const colorClass = contextRingColor(percent);
+  const textColor = utilizationColor(percent);
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            className="flex items-center justify-center rounded-md px-1 py-1 transition-colors hover:bg-muted/60"
+          >
+            <svg
+              width={CONTEXT_RING_SIZE}
+              height={CONTEXT_RING_SIZE}
+              className="rotate-[-90deg]"
+            >
+              {/* Background ring */}
+              <circle
+                cx={CONTEXT_RING_SIZE / 2}
+                cy={CONTEXT_RING_SIZE / 2}
+                r={CONTEXT_RING_RADIUS}
+                fill="none"
+                strokeWidth={CONTEXT_RING_STROKE}
+                className="stroke-muted/40"
+              />
+              {/* Progress ring */}
+              <circle
+                cx={CONTEXT_RING_SIZE / 2}
+                cy={CONTEXT_RING_SIZE / 2}
+                r={CONTEXT_RING_RADIUS}
+                fill="none"
+                strokeWidth={CONTEXT_RING_STROKE}
+                strokeLinecap="round"
+                strokeDasharray={CONTEXT_RING_CIRCUMFERENCE}
+                strokeDashoffset={offset}
+                className={`${colorClass} transition-all duration-500`}
+              />
+            </svg>
+            <span className={`ml-1 text-[10px] font-medium ${textColor}`}>
+              {Math.round(percent)}%
+            </span>
+          </button>
+        }
+      />
+      <TooltipPopup side="top" sideOffset={8} className="px-2 py-1">
+        <span className="text-[11px]">
+          Context: {formatTokenCount(ctx.usedTokens)} / {formatTokenCount(ctx.maxTokens)} tokens ({Math.round(percent)}%)
+        </span>
+      </TooltipPopup>
+    </Tooltip>
+  );
+});
+
 const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
   activePlan: boolean;
   interactionMode: ProviderInteractionMode;
   planSidebarOpen: boolean;
   runtimeMode: RuntimeMode;
   selectedEffort: CodexReasoningEffort | null;
+  selectedClaudeEffort: ClaudeEffortLevel | null;
   selectedProvider: ProviderKind;
   selectedCodexFastModeEnabled: boolean;
   reasoningOptions: ReadonlyArray<CodexReasoningEffort>;
+  claudeEffortOptions: ReadonlyArray<ClaudeEffortLevel>;
   onEffortSelect: (effort: CodexReasoningEffort) => void;
+  onClaudeEffortSelect: (effort: ClaudeEffortLevel) => void;
   onCodexFastModeChange: (enabled: boolean) => void;
   onToggleInteractionMode: () => void;
   onTogglePlanSidebar: () => void;
   onToggleRuntimeMode: () => void;
 }) {
   const defaultReasoningEffort = getDefaultReasoningEffort("codex");
+  const defaultClaudeEffort = getDefaultClaudeEffort("claudeCode");
   const reasoningLabelByOption: Record<CodexReasoningEffort, string> = {
     low: "Low",
     medium: "Medium",
     high: "High",
     xhigh: "Extra High",
+  };
+  const claudeEffortLabelByOption: Record<ClaudeEffortLevel, string> = {
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    max: "Max",
   };
 
   return (
@@ -6397,6 +7076,30 @@ const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(pr
               >
                 <MenuRadioItem value="off">off</MenuRadioItem>
                 <MenuRadioItem value="on">on</MenuRadioItem>
+              </MenuRadioGroup>
+            </MenuGroup>
+            <MenuDivider />
+          </>
+        ) : null}
+        {props.selectedProvider === "claudeCode" && props.selectedClaudeEffort != null ? (
+          <>
+            <MenuGroup>
+              <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Effort</div>
+              <MenuRadioGroup
+                value={props.selectedClaudeEffort}
+                onValueChange={(value) => {
+                  if (!value) return;
+                  const nextEffort = props.claudeEffortOptions.find((option) => option === value);
+                  if (!nextEffort) return;
+                  props.onClaudeEffortSelect(nextEffort);
+                }}
+              >
+                {props.claudeEffortOptions.map((effort) => (
+                  <MenuRadioItem key={effort} value={effort}>
+                    {claudeEffortLabelByOption[effort]}
+                    {effort === defaultClaudeEffort ? " (default)" : ""}
+                  </MenuRadioItem>
+                ))}
               </MenuRadioGroup>
             </MenuGroup>
             <MenuDivider />
@@ -6515,6 +7218,64 @@ const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
           >
             <MenuRadioItem value="off">off</MenuRadioItem>
             <MenuRadioItem value="on">on</MenuRadioItem>
+          </MenuRadioGroup>
+        </MenuGroup>
+      </MenuPopup>
+    </Menu>
+  );
+});
+
+const ClaudeCodeTraitsPicker = memo(function ClaudeCodeTraitsPicker(props: {
+  effort: ClaudeEffortLevel;
+  options: ReadonlyArray<ClaudeEffortLevel>;
+  onEffortChange: (effort: ClaudeEffortLevel) => void;
+}) {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const defaultEffort = getDefaultClaudeEffort("claudeCode");
+  const effortLabelByOption: Record<ClaudeEffortLevel, string> = {
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    max: "Max",
+  };
+
+  return (
+    <Menu
+      open={isMenuOpen}
+      onOpenChange={(open) => {
+        setIsMenuOpen(open);
+      }}
+    >
+      <MenuTrigger
+        render={
+          <Button
+            size="sm"
+            variant="ghost"
+            className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+          />
+        }
+      >
+        <span>{effortLabelByOption[props.effort]}</span>
+        <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
+      </MenuTrigger>
+      <MenuPopup align="start">
+        <MenuGroup>
+          <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Effort</div>
+          <MenuRadioGroup
+            value={props.effort}
+            onValueChange={(value) => {
+              if (!value) return;
+              const nextEffort = props.options.find((option) => option === value);
+              if (!nextEffort) return;
+              props.onEffortChange(nextEffort);
+            }}
+          >
+            {props.options.map((effort) => (
+              <MenuRadioItem key={effort} value={effort}>
+                {effortLabelByOption[effort]}
+                {effort === defaultEffort ? " (default)" : ""}
+              </MenuRadioItem>
+            ))}
           </MenuRadioGroup>
         </MenuGroup>
       </MenuPopup>

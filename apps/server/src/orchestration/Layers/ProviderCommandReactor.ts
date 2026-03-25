@@ -478,6 +478,167 @@ const make = Effect.gen(function* () {
       );
   });
 
+  // ── Compaction ────────────────────────────────────────────────────
+  // Build a concise summary of thread messages for context compaction.
+
+  const COMPACT_MAX_SUMMARY_CHARS = 50_000;
+
+  function buildCompactionSummary(
+    messages: ReadonlyArray<{ role: string; text: string }>,
+  ): string {
+    const lines: string[] = [];
+    lines.push("=== CONVERSATION SUMMARY (compacted) ===");
+    lines.push("");
+    lines.push(
+      "The following is a summary of the conversation so far. " +
+        "Continue from where we left off. Maintain all context about " +
+        "files modified, decisions made, and current task state.",
+    );
+    lines.push("");
+
+    let totalChars = 0;
+    for (const msg of messages) {
+      if (!msg.text || msg.text.trim().length === 0) continue;
+      const prefix = msg.role === "user" ? "User" : msg.role === "assistant" ? "Assistant" : "System";
+      const line = `[${prefix}]: ${msg.text.trim()}`;
+      if (totalChars + line.length > COMPACT_MAX_SUMMARY_CHARS) {
+        lines.push("... (earlier messages truncated for brevity) ...");
+        break;
+      }
+      lines.push(line);
+      lines.push("");
+      totalChars += line.length;
+    }
+
+    lines.push("=== END SUMMARY ===");
+    return lines.join("\n");
+  }
+
+  const handleCompaction = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    thread: any,
+    event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
+  ) {
+    const now = event.payload.createdAt;
+
+    // Build a summary from the thread's messages (last N messages, most recent first).
+    const recentMessages = [...(thread.messages as ReadonlyArray<{ role: string; text: string }>)]
+      .reverse()
+      .slice(0, 100)
+      .reverse();
+    const summary = buildCompactionSummary(recentMessages);
+
+    yield* Effect.logInfo("provider command reactor: compacting thread context", {
+      threadId,
+      messageCount: thread.messages.length,
+      summaryLength: summary.length,
+    });
+
+    // Emit an activity so the UI shows compaction feedback to the user.
+    yield* appendProviderFailureActivity({
+      threadId,
+      kind: "provider.turn.start.failed",
+      summary: "Compacting context…",
+      detail: `Restarting session with a ${Math.round(summary.length / 1024)}KB summary of the conversation.`,
+      turnId: null,
+      createdAt: now,
+    }).pipe(Effect.catchCause(() => Effect.void));
+
+    // 1. Stop the existing provider session.
+    if (thread.session && thread.session.status !== "stopped") {
+      yield* providerService.stopSession({ threadId }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("compaction: failed to stop existing session", {
+            threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+    }
+
+    // 2. Mark the session as stopped in the orchestration read model.
+    yield* setThreadSession({
+      threadId,
+      session: {
+        threadId,
+        status: "stopped",
+        providerName: thread.session?.providerName ?? null,
+        runtimeMode: thread.session?.runtimeMode ?? "full-access",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: now,
+      },
+      createdAt: now,
+    });
+
+    // 3. Collect provider options, injecting the summary as appendSystemPrompt.
+    const existingProviderOptions = threadProviderOptions.get(threadId);
+    const compactProviderOptions: ProviderStartOptions = {
+      ...existingProviderOptions,
+      claudeCode: {
+        ...existingProviderOptions?.claudeCode,
+        appendSystemPrompt: summary,
+      },
+    };
+
+    // 4. Start a fresh provider session (no resumeCursor → fresh context) with the summary.
+    const cwd = resolveThreadWorkspaceCwd({
+      thread,
+      projects: (yield* orchestrationEngine.getReadModel()).projects,
+    });
+    const newSession = yield* providerService.startSession(threadId, {
+      threadId,
+      ...(thread.session?.providerName
+        ? { provider: thread.session.providerName as ProviderKind }
+        : {}),
+      ...(cwd ? { cwd } : {}),
+      ...(thread.model ? { model: thread.model } : {}),
+      providerOptions: compactProviderOptions,
+      runtimeMode: thread.runtimeMode,
+    });
+
+    yield* setThreadSession({
+      threadId,
+      session: {
+        threadId,
+        status: mapProviderSessionStatusToOrchestrationStatus(newSession.status),
+        providerName: newSession.provider,
+        runtimeMode: thread.runtimeMode,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: now,
+      },
+      createdAt: now,
+    });
+
+    // 5. Clear old conversation from the read model and replace with a summary marker.
+    yield* orchestrationEngine.dispatch({
+      type: "thread.context.compact",
+      commandId: serverCommandId("context-compact"),
+      threadId,
+      summary,
+      createdAt: now,
+    });
+
+    // 6. Send a follow-up turn so the model acknowledges the compacted context.
+    //    This goes directly to the provider — the orchestration will pick up the
+    //    turn via ProviderRuntimeIngestion when the provider emits events.
+    yield* sendTurnForThread({
+      threadId,
+      messageText:
+        "Context has been compacted. Please briefly acknowledge what you remember " +
+        "from the conversation summary and confirm you're ready to continue.",
+      interactionMode: event.payload.interactionMode,
+      createdAt: now,
+    });
+
+    yield* Effect.logInfo("provider command reactor: compaction complete", {
+      threadId,
+      newSessionThreadId: newSession.threadId,
+    });
+  });
+
   const processTurnStartRequested = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {
@@ -501,6 +662,12 @@ const make = Effect.gen(function* () {
         turnId: null,
         createdAt: event.payload.createdAt,
       });
+      return;
+    }
+
+    // ── Handle /compact command ──────────────────────────────────────
+    if (message.text.trim() === "/compact") {
+      yield* handleCompaction(event.payload.threadId, thread, event);
       return;
     }
 

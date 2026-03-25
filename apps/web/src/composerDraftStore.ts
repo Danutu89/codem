@@ -1,8 +1,11 @@
 import {
+  CLAUDE_EFFORT_OPTIONS,
+  DEFAULT_EFFORT_BY_PROVIDER,
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
   ProjectId,
   REASONING_EFFORT_OPTIONS_BY_PROVIDER,
   ThreadId,
+  type ClaudeEffortLevel,
   type CodexReasoningEffort,
   type ProviderKind,
   type ProviderInteractionMode,
@@ -79,6 +82,7 @@ interface PersistedComposerThreadDraftState {
   runtimeMode?: RuntimeMode | null;
   interactionMode?: ProviderInteractionMode | null;
   effort?: CodexReasoningEffort | null;
+  claudeEffort?: ClaudeEffortLevel | null;
   codexFastMode?: boolean | null;
   serviceTier?: string | null;
 }
@@ -109,6 +113,7 @@ interface ComposerThreadDraftState {
   runtimeMode: RuntimeMode | null;
   interactionMode: ProviderInteractionMode | null;
   effort: CodexReasoningEffort | null;
+  claudeEffort: ClaudeEffortLevel | null;
   codexFastMode: boolean;
 }
 
@@ -168,6 +173,7 @@ interface ComposerDraftStoreState {
     interactionMode: ProviderInteractionMode | null | undefined,
   ) => void;
   setEffort: (threadId: ThreadId, effort: CodexReasoningEffort | null | undefined) => void;
+  setClaudeEffort: (threadId: ThreadId, effort: ClaudeEffortLevel | null | undefined) => void;
   setCodexFastMode: (threadId: ThreadId, enabled: boolean | null | undefined) => void;
   addImage: (threadId: ThreadId, image: ComposerImageAttachment) => void;
   addImages: (threadId: ThreadId, images: ComposerImageAttachment[]) => void;
@@ -203,12 +209,15 @@ const EMPTY_THREAD_DRAFT = Object.freeze({
   runtimeMode: null,
   interactionMode: null,
   effort: null,
+  claudeEffort: null,
   codexFastMode: false,
 }) as ComposerThreadDraftState;
 
 const REASONING_EFFORT_VALUES = new Set<CodexReasoningEffort>(
   REASONING_EFFORT_OPTIONS_BY_PROVIDER.codex,
 );
+
+const CLAUDE_EFFORT_VALUES = new Set<ClaudeEffortLevel>(CLAUDE_EFFORT_OPTIONS);
 
 function createEmptyThreadDraft(): ComposerThreadDraftState {
   return {
@@ -221,6 +230,7 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
     runtimeMode: null,
     interactionMode: null,
     effort: null,
+    claudeEffort: null,
     codexFastMode: false,
   };
 }
@@ -241,6 +251,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.runtimeMode === null &&
     draft.interactionMode === null &&
     draft.effort === null &&
+    draft.claudeEffort === null &&
     draft.codexFastMode === false
   );
 }
@@ -424,6 +435,12 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       effortCandidate && REASONING_EFFORT_VALUES.has(effortCandidate as CodexReasoningEffort)
         ? (effortCandidate as CodexReasoningEffort)
         : null;
+    const claudeEffortCandidate =
+      typeof draftCandidate.claudeEffort === "string" ? draftCandidate.claudeEffort : null;
+    const claudeEffort =
+      claudeEffortCandidate && CLAUDE_EFFORT_VALUES.has(claudeEffortCandidate as ClaudeEffortLevel)
+        ? (claudeEffortCandidate as ClaudeEffortLevel)
+        : null;
     const codexFastMode =
       draftCandidate.codexFastMode === true ||
       (typeof draftCandidate.serviceTier === "string" && draftCandidate.serviceTier === "fast");
@@ -435,6 +452,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       !runtimeMode &&
       !interactionMode &&
       !effort &&
+      !claudeEffort &&
       !codexFastMode
     ) {
       continue;
@@ -447,6 +465,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       ...(runtimeMode ? { runtimeMode } : {}),
       ...(interactionMode ? { interactionMode } : {}),
       ...(effort ? { effort } : {}),
+      ...(claudeEffort ? { claudeEffort } : {}),
       ...(codexFastMode ? { codexFastMode } : {}),
     };
   }
@@ -553,6 +572,7 @@ function toHydratedThreadDraft(
     runtimeMode: persistedDraft.runtimeMode ?? null,
     interactionMode: persistedDraft.interactionMode ?? null,
     effort: persistedDraft.effort ?? null,
+    claudeEffort: persistedDraft.claudeEffort ?? null,
     codexFastMode: persistedDraft.codexFastMode === true,
   };
 }
@@ -959,6 +979,38 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           return { draftsByThreadId: nextDraftsByThreadId };
         });
       },
+      setClaudeEffort: (threadId, effort) => {
+        if (threadId.length === 0) {
+          return;
+        }
+        const nextEffort =
+          effort &&
+          CLAUDE_EFFORT_VALUES.has(effort) &&
+          effort !== DEFAULT_EFFORT_BY_PROVIDER.claudeCode
+            ? effort
+            : null;
+        set((state) => {
+          const existing = state.draftsByThreadId[threadId];
+          if (!existing && nextEffort === null) {
+            return state;
+          }
+          const base = existing ?? createEmptyThreadDraft();
+          if (base.claudeEffort === nextEffort) {
+            return state;
+          }
+          const nextDraft: ComposerThreadDraftState = {
+            ...base,
+            claudeEffort: nextEffort,
+          };
+          const nextDraftsByThreadId = { ...state.draftsByThreadId };
+          if (shouldRemoveDraft(nextDraft)) {
+            delete nextDraftsByThreadId[threadId];
+          } else {
+            nextDraftsByThreadId[threadId] = nextDraft;
+          }
+          return { draftsByThreadId: nextDraftsByThreadId };
+        });
+      },
       setCodexFastMode: (threadId, enabled) => {
         if (threadId.length === 0) {
           return;
@@ -1223,6 +1275,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             draft.runtimeMode === null &&
             draft.interactionMode === null &&
             draft.effort === null &&
+            draft.claudeEffort === null &&
             draft.codexFastMode === false
           ) {
             continue;
@@ -1245,6 +1298,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           }
           if (draft.effort) {
             persistedDraft.effort = draft.effort;
+          }
+          if (draft.claudeEffort) {
+            persistedDraft.claudeEffort = draft.claudeEffort;
           }
           if (draft.codexFastMode) {
             persistedDraft.codexFastMode = true;

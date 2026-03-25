@@ -869,6 +869,22 @@ const make = Effect.gen(function* () {
                 : (thread.session?.lastError ?? null);
 
         if (shouldApplyThreadLifecycle) {
+          // Extract context window fill from turn.completed usage data.
+          const contextWindow = (() => {
+            if (event.type !== "turn.completed") {
+              return thread.session?.contextWindow;
+            }
+            const payload = event.payload as Record<string, unknown>;
+            const usage = payload.usage as
+              | { input_tokens?: number }
+              | undefined;
+            const inputTokens = usage?.input_tokens;
+            if (typeof inputTokens === "number" && inputTokens > 0) {
+              return { usedTokens: inputTokens, maxTokens: 200_000 };
+            }
+            return thread.session?.contextWindow;
+          })();
+
           yield* orchestrationEngine.dispatch({
             type: "thread.session.set",
             commandId: providerCommandId(event, "thread-session-set"),
@@ -881,6 +897,7 @@ const make = Effect.gen(function* () {
               activeTurnId: nextActiveTurnId,
               lastError,
               updatedAt: now,
+              ...(contextWindow ? { contextWindow } : {}),
             },
             createdAt: now,
           });

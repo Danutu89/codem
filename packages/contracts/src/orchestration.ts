@@ -47,8 +47,12 @@ const CodexProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(TrimmedNonEmptyString),
 });
+const ClaudeCodeProviderStartOptions = Schema.Struct({
+  mcpServers: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+});
 const ProviderStartOptions = Schema.Struct({
   codex: Schema.optional(CodexProviderStartOptions),
+  claudeCode: Schema.optional(ClaudeCodeProviderStartOptions),
 });
 export const RuntimeMode = Schema.Literals(["approval-required", "full-access"]);
 export type RuntimeMode = typeof RuntimeMode.Type;
@@ -187,6 +191,13 @@ export const OrchestrationSession = Schema.Struct({
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
+  /** Per-thread context window fill level (last turn's input_tokens vs model max). */
+  contextWindow: Schema.optional(
+    Schema.Struct({
+      usedTokens: Schema.Number,
+      maxTokens: Schema.Number,
+    }),
+  ),
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
 
@@ -541,6 +552,14 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadContextCompactCommand = Schema.Struct({
+  type: Schema.Literal("thread.context.compact"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  summary: Schema.String,
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
@@ -549,6 +568,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
+  ThreadContextCompactCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
 
@@ -579,6 +599,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "thread.context-compacted",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -743,6 +764,11 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
   activity: OrchestrationThreadActivity,
 });
 
+export const ThreadContextCompactedPayload = Schema.Struct({
+  threadId: ThreadId,
+  summary: Schema.String,
+});
+
 export const OrchestrationEventMetadata = Schema.Struct({
   providerTurnId: Schema.optional(TrimmedNonEmptyString),
   providerItemId: Schema.optional(ProviderItemId),
@@ -864,6 +890,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.context-compacted"),
+    payload: ThreadContextCompactedPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

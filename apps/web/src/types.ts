@@ -112,4 +112,5 @@ export interface ThreadSession {
   updatedAt: string;
   lastError?: string;
   orchestrationStatus: OrchestrationSessionStatus;
+  contextWindow?: { usedTokens: number; maxTokens: number } | undefined;
 }

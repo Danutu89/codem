@@ -611,6 +611,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.context.compact": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.context-compacted",
+        payload: {
+          threadId: command.threadId,
+          summary: command.summary,
+        },
+      };
+    }
+
     default: {
       command satisfies never;
       const fallback = command as never as { type: string };

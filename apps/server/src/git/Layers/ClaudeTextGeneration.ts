@@ -129,6 +129,7 @@ function runClaudeJson<S extends Schema.Top & { readonly DecodingServices: never
                 cwd,
                 model: CLAUDE_DEFAULT_MODEL,
                 permissionMode: "plan",
+                effort: "low",
                 outputFormat: {
                   type: "json_schema",
                   schema: jsonSchema,

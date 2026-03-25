@@ -123,15 +123,19 @@ export function UsageInfoBadge() {
 
 // ── Full panel (used in tooltip and optionally standalone) ──────────
 
-export function UsageInfoPanel() {
+export function UsageInfoPanel(props: {
+  contextWindow?: { usedTokens: number; maxTokens: number } | undefined;
+} = {}) {
   const snapshot = useUsageInfo();
+  const contextWindow = props.contextWindow;
 
   const hasCost = snapshot?.sessionCostUsd != null && snapshot.sessionCostUsd > 0;
   const hasTokens = snapshot?.sessionTokens != null &&
     (snapshot.sessionTokens.inputTokens > 0 || snapshot.sessionTokens.outputTokens > 0);
   const hasWindows = snapshot != null && snapshot.windows.length > 0;
+  const hasContextWindow = contextWindow != null && contextWindow.usedTokens > 0;
 
-  if (!snapshot || (!hasWindows && !hasCost && !hasTokens)) {
+  if (!snapshot || (!hasWindows && !hasCost && !hasTokens && !hasContextWindow)) {
     return (
       <div className="p-3 text-[11px] text-muted-foreground/50">
         No usage data yet. Usage info appears after the first Claude Code interaction.
@@ -166,6 +170,24 @@ export function UsageInfoPanel() {
         <WindowRow key={window.type} window={window} />
       ))}
 
+      {/* Context window usage (per-thread) */}
+      {contextWindow != null && contextWindow.usedTokens > 0 && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="text-muted-foreground font-medium">Context Window</span>
+            <span className={utilizationColor((contextWindow.usedTokens / contextWindow.maxTokens) * 100)}>
+              {formatTokenCount(contextWindow.usedTokens)} / {formatTokenCount(contextWindow.maxTokens)}
+            </span>
+          </div>
+          <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-muted/40">
+            <div
+              className={`absolute inset-y-0 left-0 rounded-full transition-all duration-500 ${utilizationBarColor((contextWindow.usedTokens / contextWindow.maxTokens) * 100)}`}
+              style={{ width: `${Math.min(100, (contextWindow.usedTokens / contextWindow.maxTokens) * 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Session cost / tokens summary */}
       {(snapshot.sessionCostUsd != null || snapshot.sessionTokens != null) && (
         <div className="border-t border-muted/30 pt-2 space-y-0.5">
@@ -190,7 +212,7 @@ export function UsageInfoPanel() {
   );
 }
 
-function formatTokenCount(count: number): string {
+export function formatTokenCount(count: number): string {
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
   if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
   return String(count);

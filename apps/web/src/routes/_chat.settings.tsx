@@ -4,7 +4,7 @@ import { useCallback, useState } from "react";
 import { type ProviderKind } from "@t3tools/contracts";
 import { getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
 
-import { MAX_CUSTOM_MODEL_LENGTH, useAppSettings } from "../appSettings";
+import { type McpServerEntry, MAX_CUSTOM_MODEL_LENGTH, useAppSettings } from "../appSettings";
 import { isElectron } from "../env";
 import { useTheme } from "../hooks/useTheme";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
@@ -119,6 +119,88 @@ function SettingsRouteView() {
   const codexBinaryPath = settings.codexBinaryPath;
   const codexHomePath = settings.codexHomePath;
   const keybindingsConfigPath = serverConfigQuery.data?.keybindingsConfigPath ?? null;
+
+  // MCP server form state
+  const [mcpName, setMcpName] = useState("");
+  const [mcpTransport, setMcpTransport] = useState<"stdio" | "sse" | "http">("stdio");
+  const [mcpCommand, setMcpCommand] = useState("");
+  const [mcpArgs, setMcpArgs] = useState("");
+  const [mcpUrl, setMcpUrl] = useState("");
+  const [mcpEnvPairs, setMcpEnvPairs] = useState<Array<{ key: string; value: string }>>([]);
+  const [mcpHeaderPairs, setMcpHeaderPairs] = useState<Array<{ key: string; value: string }>>([]);
+  const [mcpError, setMcpError] = useState<string | null>(null);
+
+  const resetMcpForm = useCallback(() => {
+    setMcpName("");
+    setMcpCommand("");
+    setMcpArgs("");
+    setMcpUrl("");
+    setMcpEnvPairs([]);
+    setMcpHeaderPairs([]);
+    setMcpError(null);
+  }, []);
+
+  const addMcpServer = useCallback(() => {
+    const name = mcpName.trim();
+    if (!name) {
+      setMcpError("Server name is required.");
+      return;
+    }
+    if (settings.mcpServers.some((s) => s.name === name)) {
+      setMcpError("A server with this name already exists.");
+      return;
+    }
+    if (mcpTransport === "stdio" && !mcpCommand.trim()) {
+      setMcpError("Command is required for stdio transport.");
+      return;
+    }
+    if ((mcpTransport === "sse" || mcpTransport === "http") && !mcpUrl.trim()) {
+      setMcpError("URL is required for SSE/HTTP transport.");
+      return;
+    }
+
+    const entry: McpServerEntry = {
+      name,
+      transport: mcpTransport,
+      ...(mcpTransport === "stdio"
+        ? {
+            command: mcpCommand.trim(),
+            ...(mcpArgs.trim() ? { args: mcpArgs.trim() } : {}),
+            ...(mcpEnvPairs.filter((p) => p.key.trim()).length > 0
+              ? { env: mcpEnvPairs.filter((p) => p.key.trim()) }
+              : {}),
+          }
+        : {
+            url: mcpUrl.trim(),
+            ...(mcpHeaderPairs.filter((p) => p.key.trim()).length > 0
+              ? { headers: mcpHeaderPairs.filter((p) => p.key.trim()) }
+              : {}),
+          }),
+    };
+
+    updateSettings({ mcpServers: [...settings.mcpServers, entry] });
+    resetMcpForm();
+  }, [
+    mcpName,
+    mcpTransport,
+    mcpCommand,
+    mcpArgs,
+    mcpUrl,
+    mcpEnvPairs,
+    mcpHeaderPairs,
+    settings.mcpServers,
+    updateSettings,
+    resetMcpForm,
+  ]);
+
+  const removeMcpServer = useCallback(
+    (index: number) => {
+      updateSettings({
+        mcpServers: settings.mcpServers.filter((_, i) => i !== index),
+      });
+    },
+    [settings.mcpServers, updateSettings],
+  );
 
   const openKeybindingsFile = useCallback(() => {
     if (!keybindingsConfigPath) return;
@@ -676,6 +758,277 @@ function SettingsRouteView() {
                   The app URL to test is configured per-project in the chat view when you click
                   &ldquo;Test in Browser&rdquo;.
                 </p>
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">MCP Servers</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Configure Model Context Protocol (MCP) servers that Claude Code can connect to for
+                  additional tools and capabilities. Changes take effect on the next session.
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-border bg-background/50 p-4">
+                <div className="space-y-3">
+                  <label htmlFor="mcp-server-name" className="block space-y-1">
+                    <span className="text-xs font-medium text-foreground">Server name</span>
+                    <Input
+                      id="mcp-server-name"
+                      value={mcpName}
+                      onChange={(e) => {
+                        setMcpName(e.target.value);
+                        setMcpError(null);
+                      }}
+                      placeholder="my-mcp-server"
+                      spellCheck={false}
+                    />
+                  </label>
+
+                  <div className="space-y-1">
+                    <span className="text-xs font-medium text-foreground">Transport</span>
+                    <div className="flex gap-2">
+                      {(["stdio", "sse", "http"] as const).map((t) => (
+                        <button
+                          key={t}
+                          type="button"
+                          className={`rounded-md border px-3 py-1 text-xs font-medium transition-colors ${
+                            mcpTransport === t
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "border-border bg-background text-muted-foreground hover:bg-muted"
+                          }`}
+                          onClick={() => {
+                            setMcpTransport(t);
+                            setMcpError(null);
+                          }}
+                        >
+                          {t.toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {mcpTransport === "stdio" && (
+                    <>
+                      <label htmlFor="mcp-command" className="block space-y-1">
+                        <span className="text-xs font-medium text-foreground">Command</span>
+                        <Input
+                          id="mcp-command"
+                          value={mcpCommand}
+                          onChange={(e) => {
+                            setMcpCommand(e.target.value);
+                            setMcpError(null);
+                          }}
+                          placeholder="npx"
+                          spellCheck={false}
+                        />
+                      </label>
+
+                      <label htmlFor="mcp-args" className="block space-y-1">
+                        <span className="text-xs font-medium text-foreground">Arguments</span>
+                        <Input
+                          id="mcp-args"
+                          value={mcpArgs}
+                          onChange={(e) => setMcpArgs(e.target.value)}
+                          placeholder="-y @modelcontextprotocol/server-filesystem /tmp"
+                          spellCheck={false}
+                        />
+                        <span className="text-xs text-muted-foreground">
+                          Space-separated arguments passed to the command.
+                        </span>
+                      </label>
+
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-medium text-foreground">
+                            Environment variables
+                          </span>
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            onClick={() =>
+                              setMcpEnvPairs((prev) => [...prev, { key: "", value: "" }])
+                            }
+                          >
+                            Add
+                          </Button>
+                        </div>
+                        {mcpEnvPairs.map((pair, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <Input
+                              value={pair.key}
+                              onChange={(e) =>
+                                setMcpEnvPairs((prev) =>
+                                  prev.map((p, j) =>
+                                    j === i ? { ...p, key: e.target.value } : p,
+                                  ),
+                                )
+                              }
+                              placeholder="KEY"
+                              className="flex-1"
+                              spellCheck={false}
+                            />
+                            <Input
+                              value={pair.value}
+                              onChange={(e) =>
+                                setMcpEnvPairs((prev) =>
+                                  prev.map((p, j) =>
+                                    j === i ? { ...p, value: e.target.value } : p,
+                                  ),
+                                )
+                              }
+                              placeholder="value"
+                              className="flex-1"
+                              spellCheck={false}
+                            />
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                setMcpEnvPairs((prev) => prev.filter((_, j) => j !== i))
+                              }
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  {(mcpTransport === "sse" || mcpTransport === "http") && (
+                    <>
+                      <label htmlFor="mcp-url" className="block space-y-1">
+                        <span className="text-xs font-medium text-foreground">URL</span>
+                        <Input
+                          id="mcp-url"
+                          value={mcpUrl}
+                          onChange={(e) => {
+                            setMcpUrl(e.target.value);
+                            setMcpError(null);
+                          }}
+                          placeholder={
+                            mcpTransport === "sse"
+                              ? "http://localhost:3001/sse"
+                              : "http://localhost:3001/mcp"
+                          }
+                          spellCheck={false}
+                        />
+                      </label>
+
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-medium text-foreground">Headers</span>
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            onClick={() =>
+                              setMcpHeaderPairs((prev) => [...prev, { key: "", value: "" }])
+                            }
+                          >
+                            Add
+                          </Button>
+                        </div>
+                        {mcpHeaderPairs.map((pair, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <Input
+                              value={pair.key}
+                              onChange={(e) =>
+                                setMcpHeaderPairs((prev) =>
+                                  prev.map((p, j) =>
+                                    j === i ? { ...p, key: e.target.value } : p,
+                                  ),
+                                )
+                              }
+                              placeholder="Header-Name"
+                              className="flex-1"
+                              spellCheck={false}
+                            />
+                            <Input
+                              value={pair.value}
+                              onChange={(e) =>
+                                setMcpHeaderPairs((prev) =>
+                                  prev.map((p, j) =>
+                                    j === i ? { ...p, value: e.target.value } : p,
+                                  ),
+                                )
+                              }
+                              placeholder="value"
+                              className="flex-1"
+                              spellCheck={false}
+                            />
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                setMcpHeaderPairs((prev) => prev.filter((_, j) => j !== i))
+                              }
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  {mcpError ? (
+                    <p className="text-xs text-destructive">{mcpError}</p>
+                  ) : null}
+
+                  <Button size="sm" onClick={addMcpServer}>
+                    Add server
+                  </Button>
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <p>Configured servers: {settings.mcpServers.length}</p>
+                  {settings.mcpServers.length > 0 && (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => updateSettings({ mcpServers: [] })}
+                    >
+                      Remove all
+                    </Button>
+                  )}
+                </div>
+
+                {settings.mcpServers.length > 0 ? (
+                  settings.mcpServers.map((server, index) => (
+                    <div
+                      key={server.name}
+                      className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <code className="text-xs font-medium text-foreground">{server.name}</code>
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          {server.transport === "stdio" ? server.command : server.url}
+                        </span>
+                      </div>
+                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {server.transport}
+                      </span>
+                      <Button size="xs" variant="ghost" onClick={() => removeMcpServer(index)}>
+                        Remove
+                      </Button>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-lg border border-dashed border-border bg-background px-3 py-4 text-center text-xs text-muted-foreground">
+                    No MCP servers configured.
+                  </div>
+                )}
+
+                {settings.mcpServers.length > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    Environment variables and headers may contain sensitive values. These are stored
+                    locally on this device.
+                  </p>
+                )}
               </div>
             </section>
 
