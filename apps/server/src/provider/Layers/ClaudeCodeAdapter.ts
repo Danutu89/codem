@@ -1324,6 +1324,8 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
                 taskId: RuntimeTaskId.makeUnsafe(message.task_id),
                 description: message.description,
                 ...(message.task_type ? { taskType: message.task_type } : {}),
+                ...(message.prompt ? { prompt: message.prompt } : {}),
+                ...(message.tool_use_id ? { toolUseId: message.tool_use_id } : {}),
               },
             });
             return;
@@ -1336,6 +1338,7 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
                 description: message.description,
                 ...(message.usage ? { usage: message.usage } : {}),
                 ...(message.last_tool_name ? { lastToolName: message.last_tool_name } : {}),
+                ...(message.summary ? { summary: message.summary } : {}),
               },
             });
             return;
@@ -2086,6 +2089,7 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
               }
             : {}),
           includePartialMessages: true,
+          agentProgressSummaries: true,
           canUseTool,
           env: process.env,
           ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),

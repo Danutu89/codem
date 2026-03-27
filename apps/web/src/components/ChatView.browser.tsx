@@ -107,6 +107,7 @@ function createBaseServerConfig(): ServerConfig {
       },
     ],
     availableEditors: [],
+    skills: [],
   };
 }
 

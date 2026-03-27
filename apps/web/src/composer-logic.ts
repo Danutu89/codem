@@ -109,7 +109,11 @@ export function isCollapsedCursorAdjacentToMention(
   return false;
 }
 
-export function detectComposerTrigger(text: string, cursorInput: number): ComposerTrigger | null {
+export function detectComposerTrigger(
+  text: string,
+  cursorInput: number,
+  options?: { skillNames?: readonly string[] },
+): ComposerTrigger | null {
   const cursor = clampCursor(text, cursorInput);
   const lineStart = text.lastIndexOf("\n", Math.max(0, cursor - 1)) + 1;
   const linePrefix = text.slice(lineStart, cursor);
@@ -127,6 +131,15 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
         };
       }
       if (SLASH_COMMANDS.some((command) => command.startsWith(commandQuery.toLowerCase()))) {
+        return {
+          kind: "slash-command",
+          query: commandQuery,
+          rangeStart: lineStart,
+          rangeEnd: cursor,
+        };
+      }
+      const skillNames = options?.skillNames ?? [];
+      if (skillNames.some((name) => name.startsWith(commandQuery.toLowerCase()))) {
         return {
           kind: "slash-command",
           query: commandQuery,

@@ -365,6 +365,8 @@ function runtimeEventToActivities(
             ...(event.payload.description
               ? { detail: truncateDetail(event.payload.description) }
               : {}),
+            ...(event.payload.prompt ? { prompt: truncateDetail(event.payload.prompt, 2000) } : {}),
+            ...(event.payload.toolUseId ? { toolUseId: event.payload.toolUseId } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -379,12 +381,13 @@ function runtimeEventToActivities(
           createdAt: event.createdAt,
           tone: "info",
           kind: "task.progress",
-          summary: "Reasoning update",
+          summary: event.payload.summary ?? event.payload.description ?? "Reasoning update",
           payload: {
             taskId: event.payload.taskId,
             detail: truncateDetail(event.payload.description),
             ...(event.payload.lastToolName ? { lastToolName: event.payload.lastToolName } : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
+            ...(event.payload.summary ? { aiSummary: event.payload.summary } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

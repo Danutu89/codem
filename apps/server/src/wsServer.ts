@@ -8,6 +8,8 @@
  */
 import http from "node:http";
 import type { Duplex } from "node:stream";
+import { homedir } from "node:os";
+import fsPromises from "node:fs/promises";
 
 import Mime from "@effect/platform-node/Mime";
 import {
@@ -241,6 +243,42 @@ export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycl
 class RouteRequestError extends Schema.TaggedErrorClass<RouteRequestError>()("RouteRequestError", {
   message: Schema.String,
 }) {}
+
+function extractSkillDescription(content: string, fallback: string): string {
+  const fm = /^---\s*\n([\s\S]*?)\n---/m.exec(content);
+  if (fm?.[1]) {
+    const m = /^description:\s*(.+)$/m.exec(fm[1]);
+    if (m?.[1]) return m[1].trim();
+  }
+  return fallback;
+}
+
+async function loadUserSkills(): Promise<
+  Array<{ name: string; description: string; content: string }>
+> {
+  const skillsDir = `${homedir()}/.claude/skills`;
+  try {
+    const entries = await fsPromises.readdir(skillsDir, { withFileTypes: true });
+    const results = await Promise.all(
+      entries
+        .filter((e) => e.isDirectory())
+        .map(async (e) => {
+          try {
+            const content = await fsPromises.readFile(
+              `${skillsDir}/${e.name}/SKILL.md`,
+              "utf-8",
+            );
+            return { name: e.name, description: extractSkillDescription(content, e.name), content };
+          } catch {
+            return null;
+          }
+        }),
+    );
+    return results.filter((r): r is NonNullable<typeof r> => r !== null);
+  } catch {
+    return [];
+  }
+}
 
 export const createServer = Effect.fn(function* (): Effect.fn.Return<
   http.Server,
@@ -983,8 +1021,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* terminalManager.close(body);
       }
 
-      case WS_METHODS.serverGetConfig:
+      case WS_METHODS.serverGetConfig: {
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
+        const skills = yield* Effect.promise(() => loadUserSkills());
         return {
           cwd,
           keybindingsConfigPath,
@@ -992,7 +1031,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           issues: keybindingsConfig.issues,
           providers,
           availableEditors: resolveAvailableEditors(),
+          skills,
         };
+      }
 
       case WS_METHODS.serverUpsertKeybinding: {
         const body = stripRequestTag(request.body);

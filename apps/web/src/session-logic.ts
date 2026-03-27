@@ -28,6 +28,20 @@ export const PROVIDER_OPTIONS: Array<{
   { value: "cursor", label: "Cursor", available: false },
 ];
 
+export interface SubAgentState {
+  taskId: string;
+  description: string;
+  status: "running" | "completed" | "failed" | "stopped";
+  taskType?: string;
+  prompt?: string;
+  startedAt: string;
+  completedAt?: string;
+  lastToolName?: string;
+  aiSummary?: string;
+  usage?: { totalTokens: number; toolUses: number; durationMs: number };
+  finalSummary?: string;
+}
+
 export interface WorkLogEntry {
   id: string;
   createdAt: string;
@@ -91,6 +105,12 @@ export type TimelineEntry =
       kind: "work";
       createdAt: string;
       entry: WorkLogEntry;
+    }
+  | {
+      id: string;
+      kind: "sub-agent";
+      createdAt: string;
+      subAgent: SubAgentState;
     };
 
 export function formatTimestamp(isoDate: string): string {
@@ -382,6 +402,120 @@ export function deriveActivePlanState(
   };
 }
 
+export function deriveSubAgentStates(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): SubAgentState[] {
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const byTaskId = new Map<string, SubAgentState>();
+
+  for (const activity of ordered) {
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const taskId = payload && typeof payload.taskId === "string" ? payload.taskId : null;
+    if (!taskId) continue;
+
+    if (activity.kind === "task.started") {
+      byTaskId.set(taskId, {
+        taskId,
+        description:
+          typeof payload.detail === "string" && payload.detail.length > 0
+            ? payload.detail
+            : activity.summary,
+        status: "running",
+        ...(typeof payload.taskType === "string" ? { taskType: payload.taskType } : {}),
+        ...(typeof payload.prompt === "string" ? { prompt: payload.prompt } : {}),
+        startedAt: activity.createdAt,
+      });
+      continue;
+    }
+
+    if (activity.kind === "task.progress") {
+      const existing = byTaskId.get(taskId);
+      if (!existing) {
+        // Progress without a start — create an entry anyway
+        byTaskId.set(taskId, {
+          taskId,
+          description:
+            typeof payload.detail === "string" && payload.detail.length > 0
+              ? payload.detail
+              : activity.summary,
+          status: "running",
+          startedAt: activity.createdAt,
+        });
+      }
+      const entry = byTaskId.get(taskId)!;
+      if (typeof payload.lastToolName === "string") {
+        entry.lastToolName = payload.lastToolName;
+      }
+      if (typeof payload.aiSummary === "string") {
+        entry.aiSummary = payload.aiSummary;
+      }
+      const usage = payload.usage;
+      if (usage && typeof usage === "object") {
+        const u = usage as Record<string, unknown>;
+        if (
+          typeof u.total_tokens === "number" &&
+          typeof u.tool_uses === "number" &&
+          typeof u.duration_ms === "number"
+        ) {
+          entry.usage = {
+            totalTokens: u.total_tokens,
+            toolUses: u.tool_uses,
+            durationMs: u.duration_ms,
+          };
+        }
+      }
+      // Update description from latest progress
+      if (typeof payload.detail === "string" && payload.detail.length > 0) {
+        entry.description = payload.detail;
+      }
+      continue;
+    }
+
+    if (activity.kind === "task.completed") {
+      const existing = byTaskId.get(taskId);
+      if (!existing) {
+        byTaskId.set(taskId, {
+          taskId,
+          description: activity.summary,
+          status: "running",
+          startedAt: activity.createdAt,
+        });
+      }
+      const entry = byTaskId.get(taskId)!;
+      const status = payload.status;
+      entry.status =
+        status === "completed" || status === "failed" || status === "stopped"
+          ? status
+          : "completed";
+      entry.completedAt = activity.createdAt;
+      if (typeof payload.detail === "string" && payload.detail.length > 0) {
+        entry.finalSummary = payload.detail;
+      }
+      const usage = payload.usage;
+      if (usage && typeof usage === "object") {
+        const u = usage as Record<string, unknown>;
+        if (
+          typeof u.total_tokens === "number" &&
+          typeof u.tool_uses === "number" &&
+          typeof u.duration_ms === "number"
+        ) {
+          entry.usage = {
+            totalTokens: u.total_tokens,
+            toolUses: u.tool_uses,
+            durationMs: u.duration_ms,
+          };
+        }
+      }
+      continue;
+    }
+  }
+
+  return [...byTaskId.values()].toSorted((a, b) => a.startedAt.localeCompare(b.startedAt));
+}
+
 export function findLatestProposedPlan(
   proposedPlans: ReadonlyArray<ProposedPlan>,
   latestTurnId: TurnId | string | null | undefined,
@@ -463,7 +597,7 @@ export function deriveWorkLogEntries(
       }
       return true;
     })
-    .filter((activity) => activity.kind !== "task.started" && activity.kind !== "task.completed")
+    .filter((activity) => activity.kind !== "task.started" && activity.kind !== "task.completed" && activity.kind !== "task.progress")
     .filter((activity) => activity.summary !== "Checkpoint captured")
     // Hide TodoWrite / TodoRead from the work log — their data is shown in the Plan sidebar instead.
     .filter((activity) => {
@@ -675,6 +809,7 @@ export function deriveTimelineEntries(
   messages: ChatMessage[],
   proposedPlans: ProposedPlan[],
   workEntries: WorkLogEntry[],
+  subAgents?: SubAgentState[],
 ): TimelineEntry[] {
   const messageRows: TimelineEntry[] = messages.map((message) => ({
     id: message.id,
@@ -700,7 +835,13 @@ export function deriveTimelineEntries(
       createdAt: entry.createdAt,
       entry,
     }));
-  return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
+  const subAgentRows: TimelineEntry[] = (subAgents ?? []).map((subAgent) => ({
+    id: `sub-agent:${subAgent.taskId}`,
+    kind: "sub-agent",
+    createdAt: subAgent.startedAt,
+    subAgent,
+  }));
+  return [...messageRows, ...proposedPlanRows, ...workRows, ...subAgentRows].toSorted((a, b) =>
     a.createdAt.localeCompare(b.createdAt),
   );
 }

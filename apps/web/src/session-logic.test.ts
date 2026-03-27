@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
+  deriveSubAgentStates,
   PROVIDER_OPTIONS,
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -344,7 +345,7 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
   });
 
-  it("omits task start and completion lifecycle entries", () => {
+  it("omits all task lifecycle entries (shown in sub-agent panel instead)", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
         id: "task-start",
@@ -370,7 +371,7 @@ describe("deriveWorkLogEntries", () => {
     ];
 
     const entries = deriveWorkLogEntries(activities);
-    expect(entries.map((entry) => entry.id)).toEqual(["task-progress"]);
+    expect(entries.map((entry) => entry.id)).toEqual([]);
   });
 
   it("returns activities across all turns", () => {
@@ -658,5 +659,151 @@ describe("PROVIDER_OPTIONS", () => {
       label: "Cursor",
       available: false,
     });
+  });
+});
+
+describe("deriveSubAgentStates", () => {
+  it("tracks a sub-agent through its full lifecycle", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "start-1",
+        createdAt: "2026-03-01T00:00:01.000Z",
+        kind: "task.started",
+        summary: "general-purpose task started",
+        tone: "info",
+        payload: {
+          taskId: "task-abc",
+          taskType: "general-purpose",
+          detail: "Explore the codebase",
+          prompt: "Find all API endpoints",
+        },
+      }),
+      makeActivity({
+        id: "progress-1",
+        createdAt: "2026-03-01T00:00:05.000Z",
+        kind: "task.progress",
+        summary: "Analyzing files",
+        tone: "info",
+        payload: {
+          taskId: "task-abc",
+          detail: "Searching for endpoints",
+          lastToolName: "Grep",
+          aiSummary: "Scanning source files for route definitions",
+          usage: { total_tokens: 1500, tool_uses: 3, duration_ms: 4000 },
+        },
+      }),
+      makeActivity({
+        id: "complete-1",
+        createdAt: "2026-03-01T00:00:10.000Z",
+        kind: "task.completed",
+        summary: "Task completed",
+        tone: "info",
+        payload: {
+          taskId: "task-abc",
+          status: "completed",
+          detail: "Found 12 API endpoints across 4 files",
+          usage: { total_tokens: 3000, tool_uses: 7, duration_ms: 9000 },
+        },
+      }),
+    ];
+
+    const states = deriveSubAgentStates(activities);
+    expect(states).toHaveLength(1);
+    const agent = states[0]!;
+    expect(agent.taskId).toBe("task-abc");
+    expect(agent.status).toBe("completed");
+    expect(agent.taskType).toBe("general-purpose");
+    expect(agent.prompt).toBe("Find all API endpoints");
+    expect(agent.lastToolName).toBe("Grep");
+    expect(agent.aiSummary).toBe("Scanning source files for route definitions");
+    expect(agent.finalSummary).toBe("Found 12 API endpoints across 4 files");
+    expect(agent.usage).toEqual({ totalTokens: 3000, toolUses: 7, durationMs: 9000 });
+    expect(agent.completedAt).toBe("2026-03-01T00:00:10.000Z");
+  });
+
+  it("tracks multiple concurrent sub-agents", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "start-a",
+        createdAt: "2026-03-01T00:00:01.000Z",
+        kind: "task.started",
+        summary: "Task A started",
+        tone: "info",
+        payload: { taskId: "task-a", detail: "Research task" },
+      }),
+      makeActivity({
+        id: "start-b",
+        createdAt: "2026-03-01T00:00:02.000Z",
+        kind: "task.started",
+        summary: "Task B started",
+        tone: "info",
+        payload: { taskId: "task-b", detail: "Code review task", taskType: "code-review" },
+      }),
+      makeActivity({
+        id: "complete-a",
+        createdAt: "2026-03-01T00:00:05.000Z",
+        kind: "task.completed",
+        summary: "Task completed",
+        tone: "info",
+        payload: { taskId: "task-a", status: "completed", detail: "Done" },
+      }),
+      makeActivity({
+        id: "complete-b",
+        createdAt: "2026-03-01T00:00:06.000Z",
+        kind: "task.completed",
+        summary: "Task failed",
+        tone: "error",
+        payload: { taskId: "task-b", status: "failed", detail: "Error occurred" },
+      }),
+    ];
+
+    const states = deriveSubAgentStates(activities);
+    expect(states).toHaveLength(2);
+    expect(states[0]!.taskId).toBe("task-a");
+    expect(states[0]!.status).toBe("completed");
+    expect(states[1]!.taskId).toBe("task-b");
+    expect(states[1]!.status).toBe("failed");
+    expect(states[1]!.taskType).toBe("code-review");
+  });
+
+  it("handles progress-only events (no start)", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "progress-1",
+        createdAt: "2026-03-01T00:00:03.000Z",
+        kind: "task.progress",
+        summary: "Working on it",
+        tone: "info",
+        payload: {
+          taskId: "task-orphan",
+          detail: "Doing work",
+          lastToolName: "Read",
+        },
+      }),
+    ];
+
+    const states = deriveSubAgentStates(activities);
+    expect(states).toHaveLength(1);
+    expect(states[0]!.taskId).toBe("task-orphan");
+    expect(states[0]!.status).toBe("running");
+    expect(states[0]!.lastToolName).toBe("Read");
+  });
+
+  it("includes sub-agents in timeline entries", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "start-1",
+        createdAt: "2026-03-01T00:00:01.000Z",
+        kind: "task.started",
+        summary: "Task started",
+        tone: "info",
+        payload: { taskId: "task-1", detail: "Do something" },
+      }),
+    ];
+
+    const subAgents = deriveSubAgentStates(activities);
+    const entries = deriveTimelineEntries([], [], [], subAgents);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.kind).toBe("sub-agent");
   });
 });

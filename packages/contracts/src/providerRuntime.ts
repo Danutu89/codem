@@ -420,6 +420,8 @@ const TaskStartedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   description: Schema.optional(TrimmedNonEmptyStringSchema),
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
+  prompt: Schema.optional(TrimmedNonEmptyStringSchema),
+  toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
 
@@ -428,6 +430,7 @@ const TaskProgressPayload = Schema.Struct({
   description: TrimmedNonEmptyStringSchema,
   usage: Schema.optional(Schema.Unknown),
   lastToolName: Schema.optional(TrimmedNonEmptyStringSchema),
+  summary: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TaskProgressPayload = typeof TaskProgressPayload.Type;
 
