@@ -62,6 +62,11 @@ const CodexProviderStartOptions = Schema.Struct({
 export const McpServersConfigSchema = Schema.Record(Schema.String, Schema.Unknown);
 export type McpServersConfig = typeof McpServersConfigSchema.Type;
 
+const PluginConfigSchema = Schema.Struct({
+  type: Schema.Literal("local"),
+  path: TrimmedNonEmptyStringSchema,
+});
+
 const ClaudeCodeProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyStringSchema),
   permissionMode: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -70,6 +75,8 @@ const ClaudeCodeProviderStartOptions = Schema.Struct({
   appendSystemPrompt: Schema.optional(Schema.String),
   /** MCP server configurations keyed by server name. */
   mcpServers: Schema.optional(McpServersConfigSchema),
+  /** Local plugin directories to load (passed to the Claude Agent SDK). */
+  plugins: Schema.optional(Schema.Array(PluginConfigSchema)),
 });
 
 const CursorProviderStartOptions = Schema.Struct({

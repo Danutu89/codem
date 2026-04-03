@@ -91,6 +91,7 @@ const RuntimeErrorClass = Schema.Literals([
   "transport_error",
   "permission_error",
   "validation_error",
+  "context_overflow",
   "unknown",
 ]);
 export type RuntimeErrorClass = typeof RuntimeErrorClass.Type;

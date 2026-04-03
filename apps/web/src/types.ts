@@ -4,6 +4,7 @@ import type {
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
   ProjectScript as ContractProjectScript,
+  SlashCommandInfo,
   ThreadId,
   ProjectId,
   TurnId,
@@ -113,4 +114,9 @@ export interface ThreadSession {
   lastError?: string;
   orchestrationStatus: OrchestrationSessionStatus;
   contextWindow?: { usedTokens: number; maxTokens: number } | undefined;
+  /**
+   * Slash commands / skills discovered by the provider runtime (user skills,
+   * project skills, plugin skills, built-in commands).
+   */
+  availableCommands?: readonly SlashCommandInfo[] | undefined;
 }

@@ -7,6 +7,13 @@ const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
 const MAX_MCP_SERVER_COUNT = 20;
+const MAX_PLUGIN_COUNT = 20;
+
+const PluginEntrySchema = Schema.Struct({
+  /** Absolute or relative path to the plugin directory. */
+  path: Schema.String,
+});
+export type PluginEntry = typeof PluginEntrySchema.Type;
 
 const McpServerEntrySchema = Schema.Struct({
   name: Schema.String,
@@ -65,6 +72,10 @@ const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(true)),
   ),
   mcpServers: Schema.Array(McpServerEntrySchema).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+  ),
+  /** Local plugin directories to load via the Claude Agent SDK. */
+  plugins: Schema.Array(PluginEntrySchema).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
   ),
 });

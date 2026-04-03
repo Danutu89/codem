@@ -202,6 +202,34 @@ function SettingsRouteView() {
     [settings.mcpServers, updateSettings],
   );
 
+  // Plugin form state
+  const [pluginPath, setPluginPath] = useState("");
+  const [pluginError, setPluginError] = useState<string | null>(null);
+
+  const addPlugin = useCallback(() => {
+    const path = pluginPath.trim();
+    if (!path) {
+      setPluginError("Plugin path is required.");
+      return;
+    }
+    if (settings.plugins.some((p) => p.path === path)) {
+      setPluginError("A plugin with this path already exists.");
+      return;
+    }
+    updateSettings({ plugins: [...settings.plugins, { path }] });
+    setPluginPath("");
+    setPluginError(null);
+  }, [pluginPath, settings.plugins, updateSettings]);
+
+  const removePlugin = useCallback(
+    (index: number) => {
+      updateSettings({
+        plugins: settings.plugins.filter((_, i) => i !== index),
+      });
+    },
+    [settings.plugins, updateSettings],
+  );
+
   const openKeybindingsFile = useCallback(() => {
     if (!keybindingsConfigPath) return;
     setOpenKeybindingsError(null);
@@ -1028,6 +1056,79 @@ function SettingsRouteView() {
                     Environment variables and headers may contain sensitive values. These are stored
                     locally on this device.
                   </p>
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">Plugins</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Load local Claude Code plugins that provide additional skills, hooks, and MCP servers.
+                  Specify the absolute path to each plugin directory.
+                  Changes take effect on the next session.
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-border bg-background/50 p-4">
+                <div className="space-y-3">
+                  <label htmlFor="plugin-path" className="block space-y-1">
+                    <span className="text-xs font-medium text-foreground">Plugin path</span>
+                    <Input
+                      id="plugin-path"
+                      value={pluginPath}
+                      onChange={(e) => {
+                        setPluginPath(e.target.value);
+                        setPluginError(null);
+                      }}
+                      placeholder="/path/to/my-plugin"
+                      spellCheck={false}
+                    />
+                  </label>
+                  {pluginError ? (
+                    <p className="text-xs text-destructive">{pluginError}</p>
+                  ) : null}
+                  <Button size="sm" onClick={addPlugin}>
+                    Add plugin
+                  </Button>
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <p>Configured plugins: {settings.plugins.length}</p>
+                  {settings.plugins.length > 0 && (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => updateSettings({ plugins: [] })}
+                    >
+                      Remove all
+                    </Button>
+                  )}
+                </div>
+
+                {settings.plugins.length > 0 ? (
+                  settings.plugins.map((plugin, index) => (
+                    <div
+                      key={plugin.path}
+                      className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <code className="text-xs font-medium text-foreground truncate block">{plugin.path}</code>
+                      </div>
+                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        local
+                      </span>
+                      <Button size="xs" variant="ghost" onClick={() => removePlugin(index)}>
+                        Remove
+                      </Button>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-lg border border-dashed border-border bg-background px-3 py-4 text-center text-xs text-muted-foreground">
+                    No plugins configured.
+                  </div>
                 )}
               </div>
             </section>

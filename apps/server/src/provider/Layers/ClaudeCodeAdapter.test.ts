@@ -72,6 +72,10 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     this.applyFlagSettingsCalls.push(settings);
   };
 
+  readonly supportedCommands = async (): Promise<Array<{ name: string; description: string; argumentHint: string }>> => {
+    return [];
+  };
+
   readonly close = (): void => {
     this.closeCalls += 1;
     this.finish();

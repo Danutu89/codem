@@ -20,6 +20,7 @@ import {
   type ServerProviderStatus,
   type ProviderKind,
   type SkillDefinition,
+  type SlashCommandInfo,
   type ThreadId,
   type TurnId,
   OrchestrationThreadActivity,
@@ -341,6 +342,8 @@ const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
 const EMPTY_PROVIDER_STATUSES: ServerProviderStatus[] = [];
 const EMPTY_SKILLS: SkillDefinition[] = [];
+/** Built-in slash commands handled by the composer itself (not sent to the SDK). */
+const BUILTIN_SLASH_COMMANDS = new Set(["model", "plan", "default", "compact"]);
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const SCRIPT_TERMINAL_COLS = 120;
@@ -1480,14 +1483,21 @@ export default function ChatView({ threadId }: ChatViewProps) {
         : undefined;
 
     const mcpServers = mcpServerEntriesToConfig(settings.mcpServers);
-    const claudeCodeOpts = mcpServers ? { mcpServers } : undefined;
+    const plugins =
+      settings.plugins && settings.plugins.length > 0
+        ? settings.plugins
+            .filter((p) => p.path.trim().length > 0)
+            .map((p) => ({ type: "local" as const, path: p.path.trim() }))
+        : undefined;
+    const claudeCodeOpts =
+      mcpServers || plugins ? { ...(mcpServers ? { mcpServers } : {}), ...(plugins && plugins.length > 0 ? { plugins } : {}) } : undefined;
 
     if (!codexOpts && !claudeCodeOpts) return undefined;
     return {
       ...(codexOpts ? { codex: codexOpts } : {}),
       ...(claudeCodeOpts ? { claudeCode: claudeCodeOpts } : {}),
     };
-  }, [settings.codexBinaryPath, settings.codexHomePath, settings.mcpServers]);
+  }, [settings.codexBinaryPath, settings.codexHomePath, settings.mcpServers, settings.plugins]);
   const selectedCursorModel = useMemo(
     () => (selectedProvider === "cursor" ? parseCursorModelSelection(selectedModel) : null),
     [selectedModel, selectedProvider],
@@ -1872,7 +1882,37 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const effectivePathQuery = pathTriggerQuery.length > 0 ? debouncedPathQuery : "";
   const branchesQuery = useQuery(gitBranchesQueryOptions(gitCwd));
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
-  const skills = serverConfigQuery.data?.skills ?? EMPTY_SKILLS;
+  const manualSkills = serverConfigQuery.data?.skills ?? EMPTY_SKILLS;
+
+  // Prefer SDK-provided commands (from session init) when a session is
+  // active — these include project skills, plugin skills, and built-in
+  // commands the SDK discovers.  Fall back to manually-loaded skills from
+  // ~/.claude/skills/ when no session has been established yet.
+  const sdkCommands: readonly SlashCommandInfo[] =
+    activeThread?.session?.availableCommands ?? [];
+
+  const skills: readonly SkillDefinition[] = useMemo(() => {
+    if (sdkCommands.length > 0) {
+      // Deduplicate: SDK commands win over manual skills by name.
+      const sdkNames = new Set(sdkCommands.map((c) => c.name));
+      // Convert SDK commands to SkillDefinition shape for the composer.
+      // `content` is empty because the SDK handles content injection
+      // via its SkillTool; we only need name + description for the menu.
+      const fromSdk: SkillDefinition[] = sdkCommands
+        // Filter out our own built-in slash commands (/model, /plan, /default, /compact)
+        // since those are handled separately by the composer.
+        .filter((c) => !BUILTIN_SLASH_COMMANDS.has(c.name))
+        .map((c) => ({
+          name: c.name,
+          description: c.description,
+          content: "",
+        }));
+      const manualNotInSdk = manualSkills.filter((s) => !sdkNames.has(s.name));
+      return [...fromSdk, ...manualNotInSdk];
+    }
+    return manualSkills;
+  }, [sdkCommands, manualSkills]);
+
   skillNamesRef.current = skills.map((s) => s.name);
   const workspaceEntriesQuery = useQuery(
     projectSearchEntriesQueryOptions({
@@ -3491,8 +3531,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
       beginSendPhase("sending-turn");
       const turnAttachments = await turnAttachmentsPromise;
+      // When a skill is active, send as a slash command so the SDK's
+      // native SkillTool handles execution (forked sub-agent with system
+      // prompt guidance), rather than injecting raw XML content into the
+      // user message.
       const turnText = activeSkillSnapshot
-        ? `<skill name="${activeSkillSnapshot.name}">\n${activeSkillSnapshot.content}\n</skill>\n\n${trimmed}`
+        ? `/${activeSkillSnapshot.name} ${trimmed}`.trim()
         : trimmed;
       await api.orchestration.dispatchCommand({
         type: "thread.turn.start",
@@ -6959,10 +7003,21 @@ const CONTEXT_RING_STROKE = 2.5;
 const CONTEXT_RING_RADIUS = (CONTEXT_RING_SIZE - CONTEXT_RING_STROKE) / 2;
 const CONTEXT_RING_CIRCUMFERENCE = 2 * Math.PI * CONTEXT_RING_RADIUS;
 
+/** Auto-compact triggers at ~93.5% of effective context window. */
+const AUTO_COMPACT_PERCENT = 93.5;
+
 function contextRingColor(percent: number): string {
+  if (percent >= AUTO_COMPACT_PERCENT) return "stroke-red-500";
   if (percent >= 90) return "stroke-red-400";
   if (percent >= 70) return "stroke-amber-400";
   return "stroke-emerald-400";
+}
+
+function contextThresholdLabel(percent: number): string | null {
+  if (percent >= AUTO_COMPACT_PERCENT) return "Auto-compacting soon\u2026";
+  if (percent >= 90) return "Context nearly full";
+  if (percent >= 70) return `Auto-compact at ${Math.round(AUTO_COMPACT_PERCENT)}%`;
+  return null;
 }
 
 const ContextWindowRing = memo(function ContextWindowRing(props: {
@@ -6975,6 +7030,11 @@ const ContextWindowRing = memo(function ContextWindowRing(props: {
   const offset = CONTEXT_RING_CIRCUMFERENCE - (percent / 100) * CONTEXT_RING_CIRCUMFERENCE;
   const colorClass = contextRingColor(percent);
   const textColor = utilizationColor(percent);
+  const thresholdLabel = contextThresholdLabel(percent);
+
+  // Auto-compact threshold marker position on the ring
+  const thresholdOffset =
+    CONTEXT_RING_CIRCUMFERENCE - (AUTO_COMPACT_PERCENT / 100) * CONTEXT_RING_CIRCUMFERENCE;
 
   return (
     <Tooltip>
@@ -6982,7 +7042,7 @@ const ContextWindowRing = memo(function ContextWindowRing(props: {
         render={
           <button
             type="button"
-            className="flex items-center justify-center rounded-md px-1 py-1 transition-colors hover:bg-muted/60"
+            className={`flex items-center justify-center rounded-md px-1 py-1 transition-colors hover:bg-muted/60${percent >= AUTO_COMPACT_PERCENT ? " animate-pulse" : ""}`}
           >
             <svg
               width={CONTEXT_RING_SIZE}
@@ -6998,6 +7058,20 @@ const ContextWindowRing = memo(function ContextWindowRing(props: {
                 strokeWidth={CONTEXT_RING_STROKE}
                 className="stroke-muted/40"
               />
+              {/* Auto-compact threshold marker */}
+              {percent >= 50 && (
+                <circle
+                  cx={CONTEXT_RING_SIZE / 2}
+                  cy={CONTEXT_RING_SIZE / 2}
+                  r={CONTEXT_RING_RADIUS}
+                  fill="none"
+                  strokeWidth={CONTEXT_RING_STROKE}
+                  strokeLinecap="round"
+                  strokeDasharray={`1 ${CONTEXT_RING_CIRCUMFERENCE - 1}`}
+                  strokeDashoffset={thresholdOffset}
+                  className="stroke-muted-foreground/30"
+                />
+              )}
               {/* Progress ring */}
               <circle
                 cx={CONTEXT_RING_SIZE / 2}
@@ -7017,10 +7091,17 @@ const ContextWindowRing = memo(function ContextWindowRing(props: {
           </button>
         }
       />
-      <TooltipPopup side="top" sideOffset={8} className="px-2 py-1">
-        <span className="text-[11px]">
-          Context: {formatTokenCount(ctx.usedTokens)} / {formatTokenCount(ctx.maxTokens)} tokens ({Math.round(percent)}%)
-        </span>
+      <TooltipPopup side="top" sideOffset={8} className="px-2 py-1.5">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[11px]">
+            Context: {formatTokenCount(ctx.usedTokens)} / {formatTokenCount(ctx.maxTokens)} tokens ({Math.round(percent)}%)
+          </span>
+          {thresholdLabel && (
+            <span className={`text-[10px] ${textColor}`}>
+              {thresholdLabel}
+            </span>
+          )}
+        </div>
       </TooltipPopup>
     </Tooltip>
   );

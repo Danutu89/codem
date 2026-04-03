@@ -314,6 +314,7 @@ export function syncServerReadModel(
               updatedAt: thread.session.updatedAt,
               ...(thread.session.lastError ? { lastError: thread.session.lastError } : {}),
               ...(thread.session.contextWindow ? { contextWindow: thread.session.contextWindow } : {}),
+              ...(thread.session.availableCommands ? { availableCommands: thread.session.availableCommands } : {}),
             }
           : null,
         messages: thread.messages.map((message) => {

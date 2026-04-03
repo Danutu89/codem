@@ -20,6 +20,10 @@ import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
+import {
+  resetAutoCompactTracking,
+  recordAutoCompactFailure,
+} from "./ProviderRuntimeIngestion.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProviderCommandReactor,
@@ -667,7 +671,20 @@ const make = Effect.gen(function* () {
 
     // ── Handle /compact command ──────────────────────────────────────
     if (message.text.trim() === "/compact") {
-      yield* handleCompaction(event.payload.threadId, thread, event);
+      yield* handleCompaction(event.payload.threadId, thread, event).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => resetAutoCompactTracking(event.payload.threadId)),
+        ),
+        Effect.catchCause((cause) =>
+          Effect.gen(function* () {
+            recordAutoCompactFailure(event.payload.threadId);
+            yield* Effect.logWarning("compaction failed, circuit breaker updated", {
+              threadId: event.payload.threadId,
+              cause: Cause.pretty(cause),
+            });
+          }),
+        ),
+      );
       return;
     }
 

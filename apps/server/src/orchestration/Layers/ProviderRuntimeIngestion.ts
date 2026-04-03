@@ -13,6 +13,7 @@ import {
 import { Cache, Cause, Duration, Effect, Layer, Option, Queue, Ref, Stream } from "effect";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { getEffectiveContextWindow } from "../../provider/modelContext.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
 import { UsageTrackerService } from "../../usageTracker.ts";
@@ -35,6 +36,46 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
+
+// ── Auto-compaction ──────────────────────────────────────────────────
+// Matches the Claude Code CLI threshold: ~93.5% of effective context window.
+const AUTO_COMPACT_THRESHOLD = 0.935;
+const MAX_AUTO_COMPACT_CONSECUTIVE_FAILURES = 3;
+
+interface AutoCompactTracking {
+  consecutiveFailures: number;
+  lastAttemptAt: string | null;
+  disabled: boolean;
+}
+
+const autoCompactState = new Map<string, AutoCompactTracking>();
+
+function getOrCreateAutoCompactTracking(threadId: string): AutoCompactTracking {
+  let tracking = autoCompactState.get(threadId);
+  if (!tracking) {
+    tracking = { consecutiveFailures: 0, lastAttemptAt: null, disabled: false };
+    autoCompactState.set(threadId, tracking);
+  }
+  return tracking;
+}
+
+/** Called on successful compaction to reset the circuit breaker. */
+export function resetAutoCompactTracking(threadId: string): void {
+  const tracking = autoCompactState.get(threadId);
+  if (tracking) {
+    tracking.consecutiveFailures = 0;
+    tracking.disabled = false;
+  }
+}
+
+/** Called on compaction failure to increment the circuit breaker. */
+export function recordAutoCompactFailure(threadId: string): void {
+  const tracking = getOrCreateAutoCompactTracking(threadId);
+  tracking.consecutiveFailures += 1;
+  if (tracking.consecutiveFailures >= MAX_AUTO_COMPACT_CONSECUTIVE_FAILURES) {
+    tracking.disabled = true;
+  }
+}
 
 type TurnStartRequestedDomainEvent = Extract<
   OrchestrationEvent,
@@ -883,7 +924,8 @@ const make = Effect.gen(function* () {
               | undefined;
             const inputTokens = usage?.input_tokens;
             if (typeof inputTokens === "number" && inputTokens > 0) {
-              return { usedTokens: inputTokens, maxTokens: 200_000 };
+              const modelName = thread.model ?? "claude-sonnet-4-6";
+              return { usedTokens: inputTokens, maxTokens: getEffectiveContextWindow(modelName) };
             }
             return thread.session?.contextWindow;
           })();
@@ -901,6 +943,168 @@ const make = Effect.gen(function* () {
               lastError,
               updatedAt: now,
               ...(contextWindow ? { contextWindow } : {}),
+            },
+            createdAt: now,
+          });
+
+          // ── Auto-compaction trigger ───────────────────────────────
+          // After a successful turn completion, check if context fill
+          // exceeds the auto-compact threshold (~93.5%).  If so,
+          // dispatch a synthetic /compact turn through the normal
+          // orchestration path.
+          if (
+            event.type === "turn.completed" &&
+            runtimeTurnState(event) === "completed" &&
+            contextWindow &&
+            contextWindow.maxTokens > 0
+          ) {
+            const fillRatio = contextWindow.usedTokens / contextWindow.maxTokens;
+            const tracking = getOrCreateAutoCompactTracking(thread.id);
+
+            if (fillRatio >= AUTO_COMPACT_THRESHOLD && !tracking.disabled) {
+              tracking.lastAttemptAt = now;
+
+              yield* Effect.logInfo("auto-compact: context fill above threshold, triggering compaction", {
+                threadId: thread.id,
+                usedTokens: contextWindow.usedTokens,
+                maxTokens: contextWindow.maxTokens,
+                fillPercent: Math.round(fillRatio * 100),
+              });
+
+              const compactMessageId = MessageId.makeUnsafe(`auto-compact-${crypto.randomUUID()}`);
+              yield* orchestrationEngine.dispatch({
+                type: "thread.turn.start",
+                commandId: CommandId.makeUnsafe(`auto-compact:${crypto.randomUUID()}`),
+                threadId: thread.id,
+                message: {
+                  messageId: compactMessageId,
+                  role: "user" as const,
+                  text: "/compact",
+                  attachments: [],
+                },
+                runtimeMode: thread.runtimeMode,
+                interactionMode: thread.interactionMode,
+                createdAt: now,
+              });
+            }
+          }
+        }
+      }
+
+      // ── Reactive compaction on context overflow errors ─────────
+      // If the provider reports a context_overflow error (prompt_too_long),
+      // attempt compaction instead of letting the thread stay in an error state.
+      if (event.type === "runtime.error") {
+        const payload = event.payload as Record<string, unknown>;
+        const errorClassValue = typeof payload.class === "string" ? payload.class : undefined;
+        const errorMsg = typeof payload.message === "string" ? payload.message : "";
+
+        const isContextOverflow =
+          errorClassValue === "context_overflow" ||
+          errorMsg.toLowerCase().includes("prompt_too_long") ||
+          errorMsg.toLowerCase().includes("prompt is too long") ||
+          errorMsg.toLowerCase().includes("context_length_exceeded");
+
+        if (isContextOverflow) {
+          const tracking = getOrCreateAutoCompactTracking(thread.id);
+
+          if (!tracking.disabled) {
+            tracking.lastAttemptAt = now;
+
+            yield* Effect.logInfo("reactive-compact: context overflow detected, triggering compaction", {
+              threadId: thread.id,
+              errorClass: errorClassValue,
+              errorMessage: errorMsg,
+            });
+
+            const compactMessageId = MessageId.makeUnsafe(`reactive-compact-${crypto.randomUUID()}`);
+            yield* orchestrationEngine.dispatch({
+              type: "thread.turn.start",
+              commandId: CommandId.makeUnsafe(`reactive-compact:${crypto.randomUUID()}`),
+              threadId: thread.id,
+              message: {
+                messageId: compactMessageId,
+                role: "user" as const,
+                text: "/compact",
+                attachments: [],
+              },
+              runtimeMode: thread.runtimeMode,
+              interactionMode: thread.interactionMode,
+              createdAt: now,
+            });
+          }
+        }
+      }
+
+      // ── Token usage updates → context window tracking ─────────
+      // Update the session's context window from dedicated usage events,
+      // supplementing the turn.completed path above.
+      if (event.type === "thread.token-usage.updated" && thread.session) {
+        const usagePayload = event.payload as Record<string, unknown>;
+        const usage = usagePayload.usage as { input_tokens?: number } | undefined;
+        const inputTokens = usage?.input_tokens;
+        if (typeof inputTokens === "number" && inputTokens > 0) {
+          const modelName = thread.model ?? "claude-sonnet-4-6";
+          const contextWindow = {
+            usedTokens: inputTokens,
+            maxTokens: getEffectiveContextWindow(modelName),
+          };
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: providerCommandId(event, "thread-session-token-usage"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              contextWindow,
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // ── Extract available commands from session init ─────────
+      // When the SDK sends a session.configured event containing the
+      // init message, extract `supportedCommands` (populated by the
+      // adapter after calling `query.supportedCommands()`) and store
+      // them on the session so the UI can populate slash-command menus.
+      if (event.type === "session.configured" && thread.session) {
+        const config = (event.payload as Record<string, unknown>).config as
+          | Record<string, unknown>
+          | undefined;
+        const rawCommands = config?.supportedCommands;
+
+        if (Array.isArray(rawCommands) && rawCommands.length > 0) {
+          type RawCmd = { name?: string; description?: string; argumentHint?: string };
+          const availableCommands = (rawCommands as RawCmd[])
+            .filter((cmd): cmd is RawCmd & { name: string } =>
+              typeof cmd.name === "string" && cmd.name.length > 0,
+            )
+            .map((cmd) => ({
+              name: cmd.name,
+              description: typeof cmd.description === "string" ? cmd.description : cmd.name,
+              ...(typeof cmd.argumentHint === "string" ? { argumentHint: cmd.argumentHint } : {}),
+            }));
+
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: providerCommandId(event, "thread-session-commands"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session.status,
+              providerName: thread.session.providerName,
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: thread.session.activeTurnId,
+              lastError: thread.session.lastError,
+              updatedAt: now,
+              ...(thread.session.contextWindow ? { contextWindow: thread.session.contextWindow } : {}),
+              availableCommands,
             },
             createdAt: now,
           });

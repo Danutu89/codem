@@ -17,6 +17,8 @@ import {
   type SDKMessage,
   type SDKResultMessage,
   type SDKUserMessage,
+  type SlashCommand,
+  type SdkPluginConfig,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   ApprovalRequestId,
@@ -138,6 +140,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
   readonly applyFlagSettings: (settings: Record<string, unknown>) => Promise<void>;
+  readonly supportedCommands: () => Promise<SlashCommand[]>;
   readonly close: () => void;
 }
 
@@ -848,6 +851,27 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
           },
         });
 
+        // Emit a dedicated token usage event so context window tracking
+        // can update even outside the turn.completed lifecycle handler.
+        if (result?.usage) {
+          const usageStamp = yield* makeEventStamp();
+          yield* offerRuntimeEvent({
+            type: "thread.token-usage.updated",
+            eventId: usageStamp.eventId,
+            provider: PROVIDER,
+            createdAt: usageStamp.createdAt,
+            threadId: context.session.threadId,
+            turnId: turnState.turnId,
+            payload: {
+              usage: result.usage,
+            },
+            providerRefs: {
+              ...providerThreadRef(context),
+              providerTurnId: turnState.turnId,
+            },
+          });
+        }
+
         const updatedAt = yield* nowIso;
         context.turnState = undefined;
         context.session = {
@@ -1214,7 +1238,42 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
         const errorMessage = message.subtype === "success" ? undefined : message.errors[0];
 
         if (status === "failed") {
-          yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
+          // Detect context overflow errors so the ingestion layer can trigger
+          // reactive compaction instead of leaving the thread in an error state.
+          const errorsText =
+            message.subtype !== "success"
+              ? message.errors.join(" ").toLowerCase()
+              : "";
+          const isContextOverflow =
+            errorsText.includes("prompt_too_long") ||
+            errorsText.includes("prompt is too long") ||
+            errorsText.includes("context_length_exceeded");
+
+          if (isContextOverflow) {
+            const stamp = yield* makeEventStamp();
+            yield* offerRuntimeEvent({
+              type: "runtime.error",
+              eventId: stamp.eventId,
+              provider: PROVIDER,
+              createdAt: stamp.createdAt,
+              threadId: context.session.threadId,
+              ...(context.turnState
+                ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
+                : {}),
+              payload: {
+                class: "context_overflow",
+                message: "Context window exceeded. Triggering compaction.",
+              },
+              providerRefs: {
+                ...providerThreadRef(context),
+                ...(context.turnState
+                  ? { providerTurnId: String(context.turnState.turnId) }
+                  : {}),
+              },
+            });
+          } else {
+            yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
+          }
         }
 
         yield* completeTurn(context, status, errorMessage, message);
@@ -1249,15 +1308,35 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
         };
 
         switch (message.subtype) {
-          case "init":
+          case "init": {
+            // Fetch the full command list with descriptions from the SDK.
+            // This includes user skills (~/.claude/skills/), project skills
+            // (.claude/skills/), plugin skills, and built-in commands.
+            const commands: SlashCommand[] = yield* Effect.promise(
+              async (): Promise<SlashCommand[]> => {
+                try {
+                  return await context.query.supportedCommands();
+                } catch {
+                  // Non-fatal — continue with empty commands.
+                  return [];
+                }
+              },
+            );
+
             yield* offerRuntimeEvent({
               ...base,
               type: "session.configured",
               payload: {
-                config: message as Record<string, unknown>,
+                config: {
+                  ...(message as Record<string, unknown>),
+                  // Attach the full SlashCommand[] so downstream consumers
+                  // (ProviderRuntimeIngestion) can surface them in the UI.
+                  supportedCommands: commands,
+                },
               },
             });
             return;
+          }
           case "status":
             yield* offerRuntimeEvent({
               ...base,
@@ -2086,6 +2165,11 @@ function makeClaudeCodeAdapter(options?: ClaudeCodeAdapterLiveOptions) {
           Object.keys(providerOptions.mcpServers).length > 0
             ? {
                 mcpServers: providerOptions.mcpServers as Record<string, McpServerConfig>,
+              }
+            : {}),
+          ...(providerOptions?.plugins && providerOptions.plugins.length > 0
+            ? {
+                plugins: providerOptions.plugins as SdkPluginConfig[],
               }
             : {}),
           includePartialMessages: true,

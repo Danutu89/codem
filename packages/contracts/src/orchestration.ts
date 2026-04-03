@@ -47,8 +47,14 @@ const CodexProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(TrimmedNonEmptyString),
 });
+const PluginConfig = Schema.Struct({
+  type: Schema.Literal("local"),
+  path: TrimmedNonEmptyString,
+});
 const ClaudeCodeProviderStartOptions = Schema.Struct({
   mcpServers: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  /** Local plugin directories to load (passed to the Claude Agent SDK). */
+  plugins: Schema.optional(Schema.Array(PluginConfig)),
 });
 const ProviderStartOptions = Schema.Struct({
   codex: Schema.optional(CodexProviderStartOptions),
@@ -183,6 +189,17 @@ export const OrchestrationSessionStatus = Schema.Literals([
 ]);
 export type OrchestrationSessionStatus = typeof OrchestrationSessionStatus.Type;
 
+/**
+ * A slash command / skill discovered by the provider runtime.
+ * Populated from the Claude Agent SDK's `supportedCommands()` API.
+ */
+export const SlashCommandInfo = Schema.Struct({
+  name: Schema.String,
+  description: Schema.String,
+  argumentHint: Schema.optional(Schema.String),
+});
+export type SlashCommandInfo = typeof SlashCommandInfo.Type;
+
 export const OrchestrationSession = Schema.Struct({
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
@@ -198,6 +215,12 @@ export const OrchestrationSession = Schema.Struct({
       maxTokens: Schema.Number,
     }),
   ),
+  /**
+   * Slash commands / skills discovered from the provider runtime (e.g.
+   * project skills, user skills, plugin skills).  Populated from the
+   * SDK's `supportedCommands()` after session initialisation.
+   */
+  availableCommands: Schema.optional(Schema.Array(SlashCommandInfo)),
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
 
